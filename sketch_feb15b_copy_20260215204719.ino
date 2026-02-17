@@ -7,7 +7,7 @@
 // ============================================
 #define BATTERY_PIN 5
 #define BATTERY_READ_INTERVAL 5000    // ms - how often to check battery
-#define POLL_INTERVALL_LOOP 200 // ms - main loop
+#define POLL_INTERVALL_LOOP 20 // ms - main loop
 
 // Voltage thresholds
 #define BATTERY_FULL 4.2              // 100%
@@ -1636,10 +1636,6 @@ void loop() {
     processCommand(cmd);
   }
   
-  if (digitalRead(BUTTON_PIN) == LOW) {
-    rollDice();
-    delay(500);
-  }
   
   if (detectShake()) {
     Serial.println("📳 Shake detected!");
