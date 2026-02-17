@@ -18,7 +18,7 @@
 #define DISPLAY_INTERVAL 1000    // ms - alternating display interval (1s)
 
 // Dice Colors (RGB values) - ADJUST THESE!
-#define DICE1_R 255
+#define DICE1_R 230
 #define DICE1_G 0
 #define DICE1_B 0      // Red
 
@@ -137,18 +137,299 @@ void drawDie(uint8_t value, uint32_t color) {
   pixels.show();
 }
 
-// Rolling animation for two dice
-void rollAnimation() {
-  for (int i = 0; i < 12; i++) {
-    // Alternate colors during animation
-    if (i % 2 == 0) {
-      drawDie(random(1, 7), COLOR_DICE1);
-    } else {
-      drawDie(random(1, 7), COLOR_DICE2);
-    }
-    delay(30 + i * 15);
+// ============================================
+// ANIMATION SETTINGS
+// ============================================
+#define ANIM_TYPE 0  // 0=Bounce, 1=Spiral, 2=Scatter, 3=Sweep, 4=Random
+
+// Bouncing dot structure
+struct BouncingDot {
+  float x, y;
+  float vx, vy;
+  uint32_t color;
+};
+
+// ============================================
+// ANIMATION FUNCTIONS
+// ============================================
+
+// Draw a single pixel (not 2x2 dot)
+void setPixel(uint8_t x, uint8_t y, uint32_t color) {
+  if (x < 8 && y < 8) {
+    pixels.setPixelColor(xy(x, y), color);
   }
 }
+
+// Animation 1: Bouncing Ball Physics
+void animBounce() {
+  BouncingDot dots[3];
+  
+  // Initialize dots with random positions and velocities
+  for (int i = 0; i < 3; i++) {
+    dots[i].x = random(1, 7);
+    dots[i].y = random(1, 7);
+    dots[i].vx = (random(0, 2) == 0 ? 1 : -1) * (0.5 + random(0, 10) / 10.0);
+    dots[i].vy = (random(0, 2) == 0 ? 1 : -1) * (0.5 + random(0, 10) / 10.0);
+    dots[i].color = (i % 2 == 0) ? COLOR_DICE1 : COLOR_DICE2;
+  }
+  
+  // Simulate bouncing with friction
+  for (int frame = 0; frame < 40; frame++) {
+    clearDisplay();
+    
+    // Apply friction over time
+    float friction = 1.0 - (frame * 0.015);
+    if (friction < 0.3) friction = 0.3;
+    
+    for (int i = 0; i < 3; i++) {
+      // Update position
+      dots[i].x += dots[i].vx * friction;
+      dots[i].y += dots[i].vy * friction;
+      
+      // Bounce off walls
+      if (dots[i].x <= 0 || dots[i].x >= 7) {
+        dots[i].vx *= -1;
+        dots[i].x = constrain(dots[i].x, 0, 7);
+      }
+      if (dots[i].y <= 0 || dots[i].y >= 7) {
+        dots[i].vy *= -1;
+        dots[i].y = constrain(dots[i].y, 0, 7);
+      }
+      
+      // Draw dot as 2x2 block
+      int px = (int)dots[i].x;
+      int py = (int)dots[i].y;
+      setPixel(px, py, dots[i].color);
+      setPixel(px + 1, py, dots[i].color);
+      setPixel(px, py + 1, dots[i].color);
+      setPixel(px + 1, py + 1, dots[i].color);
+    }
+    
+    pixels.show();
+    delay(40 - frame / 2);  // Speed up slightly at end
+  }
+}
+
+// Animation 2: Spiral In/Out
+void animSpiral() {
+  // Spiral coordinates (from outside to center)
+  const int8_t spiralX[] = {0,1,2,3,4,5,6,7, 7,7,7,7,7,7,7, 6,5,4,3,2,1,0, 0,0,0,0,0,0, 1,2,3,4,5,6, 6,6,6,6,6, 5,4,3,2,1, 1,1,1,1, 2,3,4,5, 5,5,5, 4,3,2, 2,2, 3,4, 4, 3};
+  const int8_t spiralY[] = {0,0,0,0,0,0,0,0, 1,2,3,4,5,6,7, 7,7,7,7,7,7,7, 6,5,4,3,2,1, 1,1,1,1,1,1, 2,3,4,5,6, 6,6,6,6,6, 5,4,3,2, 2,2,2,2, 3,4,5, 5,5,5, 4,3, 3,3, 4, 4};
+  const int spiralLen = 64;
+  
+  // Spiral outward (fast)
+  for (int i = spiralLen - 1; i >= 0; i -= 2) {
+    clearDisplay();
+    for (int j = spiralLen - 1; j >= i; j--) {
+      uint32_t c = ((spiralLen - j) % 4 < 2) ? COLOR_DICE1 : COLOR_DICE2;
+      setPixel(spiralX[j], spiralY[j], c);
+    }
+    pixels.show();
+    delay(15);
+  }
+  
+  delay(100);
+  
+  // Spiral inward (slower, with trail)
+  for (int i = 0; i < spiralLen; i += 2) {
+    clearDisplay();
+    // Draw trailing dots
+    for (int j = i; j < min(i + 12, spiralLen); j++) {
+      uint32_t c = (j % 4 < 2) ? COLOR_DICE1 : COLOR_DICE2;
+      // Fade based on distance from head
+      setPixel(spiralX[j], spiralY[j], c);
+    }
+    pixels.show();
+    delay(20);
+  }
+}
+
+// Animation 3: Scatter and Converge
+void animScatter() {
+  // Particle structure
+  struct Particle {
+    float x, y;
+    float targetX, targetY;
+    float vx, vy;
+    uint32_t color;
+  };
+  
+  Particle particles[12];
+  
+  // Initialize particles scattered around edges
+  for (int i = 0; i < 12; i++) {
+    // Start at random edge positions
+    int edge = random(0, 4);
+    switch (edge) {
+      case 0: particles[i].x = random(0, 8); particles[i].y = 0; break;
+      case 1: particles[i].x = random(0, 8); particles[i].y = 7; break;
+      case 2: particles[i].x = 0; particles[i].y = random(0, 8); break;
+      case 3: particles[i].x = 7; particles[i].y = random(0, 8); break;
+    }
+    // Target is center area
+    particles[i].targetX = 2 + random(0, 4);
+    particles[i].targetY = 2 + random(0, 4);
+    particles[i].color = (i % 2 == 0) ? COLOR_DICE1 : COLOR_DICE2;
+  }
+  
+  // Animate convergence
+  for (int frame = 0; frame < 30; frame++) {
+    clearDisplay();
+    
+    for (int i = 0; i < 12; i++) {
+      // Move toward target with easing
+      float progress = frame / 30.0;
+      float easing = progress * progress * (3 - 2 * progress);  // Smoothstep
+      
+      float currentX = particles[i].x + (particles[i].targetX - particles[i].x) * easing;
+      float currentY = particles[i].y + (particles[i].targetY - particles[i].y) * easing;
+      
+      // Add some wobble
+      if (frame < 20) {
+        currentX += sin(frame * 0.5 + i) * (1 - progress);
+        currentY += cos(frame * 0.5 + i) * (1 - progress);
+      }
+      
+      int px = constrain((int)currentX, 0, 7);
+      int py = constrain((int)currentY, 0, 7);
+      setPixel(px, py, particles[i].color);
+    }
+    
+    pixels.show();
+    delay(35);
+  }
+  
+  // Flash at end
+  for (int i = 0; i < 3; i++) {
+    clearDisplay();
+    pixels.show();
+    delay(50);
+    for (int p = 0; p < 12; p++) {
+      setPixel(particles[p].targetX, particles[p].targetY, particles[p].color);
+    }
+    pixels.show();
+    delay(50);
+  }
+}
+
+// Animation 4: Sweep with Random Faces
+void animSweep() {
+  // Vertical sweep showing random dice
+  for (int sweep = 0; sweep < 3; sweep++) {
+    uint32_t sweepColor = (sweep % 2 == 0) ? COLOR_DICE1 : COLOR_DICE2;
+    
+    // Sweep down
+    for (int y = 0; y < 8; y++) {
+      // Draw current random dice faintly
+      uint8_t tempVal = random(1, 7);
+      clearDisplay();
+      
+      // Draw sweep line
+      for (int x = 0; x < 8; x++) {
+        setPixel(x, y, sweepColor);
+        if (y > 0) setPixel(x, y - 1, pixels.Color(
+          (sweepColor >> 16 & 0xFF) / 3,
+          (sweepColor >> 8 & 0xFF) / 3,
+          (sweepColor & 0xFF) / 3
+        ));
+      }
+      
+      // Show random dice value below sweep
+      if (y > 2) {
+        drawDiePartial(tempVal, sweepColor, 0, y + 1);
+      }
+      
+      pixels.show();
+      delay(30 + sweep * 10);
+    }
+  }
+}
+
+// Helper for sweep animation - draw partial dice
+void drawDiePartial(uint8_t value, uint32_t color, int minY, int maxY) {
+  uint8_t leftX = 1, centerX = 3, rightX = 5;
+  uint8_t topY = 1, midY = 3, botY = 5;
+  
+  auto drawDotIfVisible = [&](uint8_t x, uint8_t y) {
+    if (y >= minY && y + 1 < maxY) {
+      drawDot(x, y, color);
+    }
+  };
+  
+  switch (value) {
+    case 1: drawDotIfVisible(centerX, midY); break;
+    case 2: drawDotIfVisible(leftX, topY); drawDotIfVisible(rightX, botY); break;
+    case 3: drawDotIfVisible(leftX, topY); drawDotIfVisible(centerX, midY); drawDotIfVisible(rightX, botY); break;
+    case 4: drawDotIfVisible(leftX, topY); drawDotIfVisible(rightX, topY); drawDotIfVisible(leftX, botY); drawDotIfVisible(rightX, botY); break;
+    case 5: drawDotIfVisible(leftX, topY); drawDotIfVisible(rightX, topY); drawDotIfVisible(centerX, midY); drawDotIfVisible(leftX, botY); drawDotIfVisible(rightX, botY); break;
+    case 6: drawDotIfVisible(leftX, topY-1); drawDotIfVisible(leftX, midY); drawDotIfVisible(leftX, botY+1); drawDotIfVisible(rightX, topY-1); drawDotIfVisible(rightX, midY); drawDotIfVisible(rightX, botY+1); break;
+  }
+}
+
+// Animation 5: Spinning Dice (rotating dots)
+void animSpin() {
+  // Define rotation positions for dots (circular path)
+  const float radius = 2.5;
+  const float centerX = 3.5;
+  const float centerY = 3.5;
+  
+  int numDots = 6;
+  float angleOffset = 0;
+  
+  for (int frame = 0; frame < 45; frame++) {
+    clearDisplay();
+    
+    // Speed decreases over time
+    float speed = 0.4 - (frame * 0.007);
+    if (speed < 0.05) speed = 0.05;
+    angleOffset += speed;
+    
+    // Current radius (starts wide, ends in center)
+    float currentRadius = radius * (1 - frame / 60.0);
+    if (frame > 35) currentRadius = radius * 0.4;
+    
+    // Draw rotating dots
+    int dotsToShow = 2 + (frame / 10);
+    if (dotsToShow > numDots) dotsToShow = numDots;
+    
+    for (int i = 0; i < dotsToShow; i++) {
+      float angle = angleOffset + (i * 2 * PI / numDots);
+      
+      int px = (int)(centerX + cos(angle) * currentRadius);
+      int py = (int)(centerY + sin(angle) * currentRadius);
+      
+      uint32_t color = (i % 2 == 0) ? COLOR_DICE1 : COLOR_DICE2;
+      
+      // Draw 2x2 dot
+      setPixel(constrain(px, 0, 6), constrain(py, 0, 6), color);
+      setPixel(constrain(px + 1, 0, 7), constrain(py, 0, 6), color);
+      setPixel(constrain(px, 0, 6), constrain(py + 1, 0, 7), color);
+      setPixel(constrain(px + 1, 0, 7), constrain(py + 1, 0, 7), color);
+    }
+    
+    pixels.show();
+    delay(40);
+  }
+}
+
+// Master animation function - calls selected animation
+void rollAnimation() {
+  int animType = ANIM_TYPE;
+  
+  // If set to random, pick one
+  if (animType == 4) {
+    animType = random(0, 4);
+  }
+  
+  switch (animType) {
+    case 0: animBounce(); break;
+    case 1: animSpiral(); break;
+    case 2: animScatter(); break;
+    case 3: animSpin(); break;
+    default: animBounce(); break;
+  }
+}
+
 
 // Roll both dice and show results
 void rollDice() {
