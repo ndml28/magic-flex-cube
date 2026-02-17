@@ -67,6 +67,12 @@
 Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 QMI8658 imu;
 
+
+// Serial connection detection
+bool serialConnected = false;
+unsigned long lastSerialActivity = 0;
+#define SERIAL_TIMEOUT 5000  // Consider disconnected after 5s of no activity
+
 // Colors
 uint32_t COLOR_BG;
 uint32_t COLOR_DICE1;
@@ -114,6 +120,69 @@ unsigned long lastRollTime = 0;
 
 // CLI state
 bool waitingForAnimNumber = false;
+
+
+// ============================================
+// SERIAL OUTPUT HELPER
+// ============================================
+
+// Check if serial is likely connected
+bool isSerialConnected() {
+  // If we received data recently, assume connected
+  if (Serial.available() > 0) {
+    lastSerialActivity = millis();
+    serialConnected = true;
+  }
+  
+  // Timeout - assume disconnected if no activity
+  if (serialConnected && (millis() - lastSerialActivity > SERIAL_TIMEOUT)) {
+    serialConnected = false;
+  }
+  
+  return serialConnected;
+}
+
+// Safe print - only prints if serial connected
+void safePrint(const char* msg) {
+  if (isSerialConnected()) {
+    safePrint(msg);
+  }
+}
+
+void safePrintln(const char* msg) {
+  if (isSerialConnected()) {
+    safePrintln(msg);
+  }
+}
+
+void safePrintln() {
+  if (isSerialConnected()) {
+    safePrintln();
+  }
+}
+
+// For values
+template<typename T>
+void safePrint(T value) {
+  if (isSerialConnected()) {
+    safePrint(value);
+  }
+}
+
+template<typename T>
+void safePrintln(T value) {
+  if (isSerialConnected()) {
+    safePrintln(value);
+  }
+}
+
+template<typename T>
+void safePrint(T value, int format) {
+  if (isSerialConnected()) {
+    safePrint(value, format);
+  }
+}
+
 
 // ============================================
 // COLOR HELPER FUNCTIONS
@@ -209,38 +278,38 @@ void printWakeupReason() {
 
   switch (wakeup_reason) {
     case ESP_SLEEP_WAKEUP_EXT0:
-      Serial.println("   Wakeup: External signal (RTC_IO)");
+      safePrintln("   Wakeup: External signal (RTC_IO)");
       break;
     case ESP_SLEEP_WAKEUP_EXT1:
-      Serial.println("   Wakeup: External signal (RTC_CNTL)");
+      safePrintln("   Wakeup: External signal (RTC_CNTL)");
       break;
     case ESP_SLEEP_WAKEUP_TIMER:
-      Serial.println("   Wakeup: Timer");
+      safePrintln("   Wakeup: Timer");
       break;
     case ESP_SLEEP_WAKEUP_TOUCHPAD:
-      Serial.println("   Wakeup: Touchpad");
+      safePrintln("   Wakeup: Touchpad");
       break;
     case ESP_SLEEP_WAKEUP_ULP:
-      Serial.println("   Wakeup: ULP program");
+      safePrintln("   Wakeup: ULP program");
       break;
     default:
-      Serial.println("   Wakeup: Power on / Reset");
+      safePrintln("   Wakeup: Power on / Reset");
       break;
   }
 }
 
 void enterDeepSleep() {
-  Serial.println();
-  Serial.println("😴 ════════════════════════════════════");
-  Serial.println("   CRITICAL BATTERY - Entering deep sleep");
-  Serial.print("   Will check again in ");
-  Serial.print(DEEP_SLEEP_DURATION);
-  Serial.println(" seconds");
-  Serial.println("   Need >");
-  Serial.print(BATTERY_NOMINAL);
-  Serial.println("V to resume operation");
-  Serial.println("════════════════════════════════════ 😴");
-  Serial.println();
+  safePrintln();
+  safePrintln("😴 ════════════════════════════════════");
+  safePrintln("   CRITICAL BATTERY - Entering deep sleep");
+  safePrint("   Will check again in ");
+  safePrint(DEEP_SLEEP_DURATION);
+  safePrintln(" seconds");
+  safePrintln("   Need >");
+  safePrint(BATTERY_NOMINAL);
+  safePrintln("V to resume operation");
+  safePrintln("════════════════════════════════════ 😴");
+  safePrintln();
   
   // Show empty battery symbol before sleep
   pixels.setBrightness(BRIGHTNESS_LOW_POWER);
@@ -264,7 +333,7 @@ void enterDeepSleep() {
   // Configure wakeup timer
   esp_sleep_enable_timer_wakeup(DEEP_SLEEP_DURATION * uS_TO_S_FACTOR);
   
-  Serial.println("Going to sleep now...");
+  safePrintln("Going to sleep now...");
   Serial.flush();
   
   // Enter deep sleep
@@ -278,23 +347,23 @@ bool checkBatteryOnWakeup() {
   batteryVoltage = readBatteryVoltage();
   batteryPercent = voltageToPercent(batteryVoltage);
   
-  Serial.println();
-  Serial.println("🔋 Wake-up battery check:");
-  Serial.print("   Voltage: ");
-  Serial.print(batteryVoltage, 2);
-  Serial.println("V");
-  Serial.print("   Required: >");
-  Serial.print(BATTERY_NOMINAL, 1);
-  Serial.println("V");
+  safePrintln();
+  safePrintln("🔋 Wake-up battery check:");
+  safePrint("   Voltage: ");
+  safePrint(batteryVoltage, 2);
+  safePrintln("V");
+  safePrint("   Required: >");
+  safePrint(BATTERY_NOMINAL, 1);
+  safePrintln("V");
   
   if (batteryVoltage >= BATTERY_NOMINAL) {
-    Serial.println("   ✅ Battery OK - Resuming normal operation!");
+    safePrintln("   ✅ Battery OK - Resuming normal operation!");
     return true;  // Continue with normal boot
   } else if (batteryVoltage <= BATTERY_SHUTDOWN) {
-    Serial.println("   💀 Battery too low - Staying in sleep");
+    safePrintln("   💀 Battery too low - Staying in sleep");
     return false;  // Go back to sleep
   } else {
-    Serial.println("   ⚠️ Battery still low - Going back to sleep");
+    safePrintln("   ⚠️ Battery still low - Going back to sleep");
     return false;  // Go back to sleep
   }
 }
@@ -303,15 +372,15 @@ bool checkBatteryOnWakeup() {
 void handleWakeup() {
   bootCount++;
   
-  Serial.println();
-  Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  Serial.print("   Boot count: ");
-  Serial.println(bootCount);
+  safePrintln();
+  safePrintln("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  safePrint("   Boot count: ");
+  safePrintln(bootCount);
   printWakeupReason();
-  Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  safePrintln("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   
   if (wasInDeepSleep) {
-    Serial.println("   Woke from deep sleep - checking battery...");
+    safePrintln("   Woke from deep sleep - checking battery...");
     
     // Initialize just enough to read battery and show display
     pixels.begin();
@@ -329,7 +398,7 @@ void handleWakeup() {
     
     // Battery OK - continue with normal boot
     wasInDeepSleep = false;
-    Serial.println("   Continuing to normal boot sequence...");
+    safePrintln("   Continuing to normal boot sequence...");
   }
 }
 
@@ -507,12 +576,12 @@ void drawDie(uint8_t value, uint32_t color) {
 // ============================================
 
 void bootupAnimation() {
-  Serial.println("🚀 Starting bootup sequence...");
+  safePrintln("🚀 Starting bootup sequence...");
   
   pixels.setBrightness(BRIGHTNESS_BOOTUP);
   
   // Phase 1: Matrix Rain Effect (2.5 seconds)
-  Serial.println("   Phase 1: Matrix Rain");
+  safePrintln("   Phase 1: Matrix Rain");
   uint8_t drops[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   uint8_t dropSpeed[8];
   uint32_t dropColor[8];
@@ -553,7 +622,7 @@ void bootupAnimation() {
   }
   
   // Phase 2: Expanding Rings (2 seconds)
-  Serial.println("   Phase 2: Expanding Rings");
+  safePrintln("   Phase 2: Expanding Rings");
   for (int ring = 0; ring < 6; ring++) {
     uint32_t ringColor = rainbowColor(ring * 42);
     
@@ -579,7 +648,7 @@ void bootupAnimation() {
   }
   
   // Phase 3: Rainbow Wave (2 seconds)
-  Serial.println("   Phase 3: Rainbow Wave");
+  safePrintln("   Phase 3: Rainbow Wave");
   for (int wave = 0; wave < 80; wave++) {
     for (int y = 0; y < 8; y++) {
       for (int x = 0; x < 8; x++) {
@@ -592,7 +661,7 @@ void bootupAnimation() {
   }
   
   // Phase 4: Dice Showcase (2 seconds)
-  Serial.println("   Phase 4: Dice Showcase");
+  safePrintln("   Phase 4: Dice Showcase");
   uint32_t showcaseColors[] = {
     pixels.Color(255, 0, 0),
     pixels.Color(255, 165, 0),
@@ -608,7 +677,7 @@ void bootupAnimation() {
   }
   
   // Phase 5: Fireworks Finale (1.5 seconds)
-  Serial.println("   Phase 5: Fireworks Finale");
+  safePrintln("   Phase 5: Fireworks Finale");
   for (int fw = 0; fw < 5; fw++) {
     // Launch point
     int cx = random(2, 6);
@@ -654,7 +723,7 @@ void bootupAnimation() {
   }
   
   // Final Flash
-  Serial.println("   Finale: Ready Flash");
+  safePrintln("   Finale: Ready Flash");
   for (int flash = 0; flash < 3; flash++) {
     fillDisplay(pixels.Color(255, 255, 255));
     pixels.show();
@@ -669,8 +738,8 @@ void bootupAnimation() {
   clearDisplay();
   pixels.show();
   
-  Serial.println("✅ Bootup complete!");
-  Serial.println();
+  safePrintln("✅ Bootup complete!");
+  safePrintln();
 }
 
 // ============================================
@@ -907,8 +976,8 @@ void rollAnimation() {
   
   if (animToPlay == 4) {
     animToPlay = random(0, 4);
-    Serial.print("   Random selected: ");
-    Serial.println(animationNames[animToPlay]);
+    safePrint("   Random selected: ");
+    safePrintln(animationNames[animToPlay]);
   }
   
   switch (animToPlay) {
@@ -925,9 +994,9 @@ void rollAnimation() {
 // ============================================
 
 void rollDice() {
-  Serial.println("🎲🎲 Rolling two dice...");
-  Serial.print("   Animation: ");
-  Serial.println(animationNames[currentAnimation]);
+  safePrintln("🎲🎲 Rolling two dice...");
+  safePrint("   Animation: ");
+  safePrintln(animationNames[currentAnimation]);
   
   rollAnimation();
   
@@ -945,23 +1014,23 @@ void rollDice() {
   isDisplayingResult = true;
   lastDisplaySwitch = millis();
   
-  Serial.println("┌─────────────────────────────┐");
-  Serial.println("│        DICE RESULTS         │");
-  Serial.println("├──────────────┬──────────────┤");
-  Serial.println("│    DICE 1    │    DICE 2    │");
-  Serial.print("│      ");
-  Serial.print(dice1Result);
-  Serial.print("       │      ");
-  Serial.print(dice2Result);
-  Serial.println("       │");
-  Serial.println("├──────────────┴──────────────┤");
-  Serial.print("│         TOTAL: ");
+  safePrintln("┌─────────────────────────────┐");
+  safePrintln("│        DICE RESULTS         │");
+  safePrintln("├──────────────┬──────────────┤");
+  safePrintln("│    DICE 1    │    DICE 2    │");
+  safePrint("│      ");
+  safePrint(dice1Result);
+  safePrint("       │      ");
+  safePrint(dice2Result);
+  safePrintln("       │");
+  safePrintln("├──────────────┴──────────────┤");
+  safePrint("│         TOTAL: ");
   uint8_t total = dice1Result + dice2Result;
-  if (total < 10) Serial.print(" ");
-  Serial.print(total);
-  Serial.println("           │");
-  Serial.println("└─────────────────────────────┘");
-  Serial.println();
+  if (total < 10) safePrint(" ");
+  safePrint(total);
+  safePrintln("           │");
+  safePrintln("└─────────────────────────────┘");
+  safePrintln();
   
   lastRollTime = millis();
 }
@@ -971,127 +1040,127 @@ void rollDice() {
 // ============================================
 
 void showHelp() {
-  Serial.println();
-  Serial.println("╔═══════════════════════════════════════╗");
-  Serial.println("║       DUAL MOTION DICE - HELP         ║");
-  Serial.println("╠═══════════════════════════════════════╣");
-  Serial.println("║  ROLL COMMANDS                        ║");
-  Serial.println("║    SHAKE BOARD  - Roll both dice      ║");
-  Serial.println("║    r / R        - Roll via serial     ║");
-  Serial.println("║    BUTTON       - Roll dice           ║");
-  Serial.println("╠═══════════════════════════════════════╣");
-  Serial.println("║  ANIMATION COMMANDS                   ║");
-  Serial.println("║    a0 - Bounce (colorful balls)       ║");
-  Serial.println("║    a1 - Spiral (rainbow vortex)       ║");
-  Serial.println("║    a2 - Scatter (particle storm)      ║");
-  Serial.println("║    a3 - Spin (rotating rings)         ║");
-  Serial.println("║    a4 - Random (surprise me!)         ║");
-  Serial.println("║    a  - Show animation list           ║");
-  Serial.println("║    p  - Preview current animation     ║");
-  Serial.println("║    b  - Replay bootup animation       ║");
-  Serial.println("╠═══════════════════════════════════════╣");
-  Serial.println("║  DISPLAY COMMANDS                     ║");
-  Serial.println("║    1-6          - Show on dice 1      ║");
-  Serial.println("║    +  / -       - Adjust interval     ║");
-  Serial.println("║    c / C        - Clear display       ║");
-  Serial.println("╠═══════════════════════════════════════╣");
-  Serial.println("║  INFO COMMANDS                        ║");
-  Serial.println("║    h / ?        - Show this help      ║");
-  Serial.println("║    i / I        - Show settings       ║");
-  Serial.println("║    s / S        - Show sensor data    ║");
-  Serial.println("╚═══════════════════════════════════════╝");
-  Serial.println("║  POWER COMMANDS                       ║");
-  Serial.println("║    v / V        - Show battery status ║");
-  Serial.println();
+  safePrintln();
+  safePrintln("╔═══════════════════════════════════════╗");
+  safePrintln("║       DUAL MOTION DICE - HELP         ║");
+  safePrintln("╠═══════════════════════════════════════╣");
+  safePrintln("║  ROLL COMMANDS                        ║");
+  safePrintln("║    SHAKE BOARD  - Roll both dice      ║");
+  safePrintln("║    r / R        - Roll via serial     ║");
+  safePrintln("║    BUTTON       - Roll dice           ║");
+  safePrintln("╠═══════════════════════════════════════╣");
+  safePrintln("║  ANIMATION COMMANDS                   ║");
+  safePrintln("║    a0 - Bounce (colorful balls)       ║");
+  safePrintln("║    a1 - Spiral (rainbow vortex)       ║");
+  safePrintln("║    a2 - Scatter (particle storm)      ║");
+  safePrintln("║    a3 - Spin (rotating rings)         ║");
+  safePrintln("║    a4 - Random (surprise me!)         ║");
+  safePrintln("║    a  - Show animation list           ║");
+  safePrintln("║    p  - Preview current animation     ║");
+  safePrintln("║    b  - Replay bootup animation       ║");
+  safePrintln("╠═══════════════════════════════════════╣");
+  safePrintln("║  DISPLAY COMMANDS                     ║");
+  safePrintln("║    1-6          - Show on dice 1      ║");
+  safePrintln("║    +  / -       - Adjust interval     ║");
+  safePrintln("║    c / C        - Clear display       ║");
+  safePrintln("╠═══════════════════════════════════════╣");
+  safePrintln("║  INFO COMMANDS                        ║");
+  safePrintln("║    h / ?        - Show this help      ║");
+  safePrintln("║    i / I        - Show settings       ║");
+  safePrintln("║    s / S        - Show sensor data    ║");
+  safePrintln("╚═══════════════════════════════════════╝");
+  safePrintln("║  POWER COMMANDS                       ║");
+  safePrintln("║    v / V        - Show battery status ║");
+  safePrintln();
 }
 
 void showAnimationList() {
-  Serial.println();
-  Serial.println("🎬 Available Animations:");
-  Serial.println("┌─────┬────────────┬─────────────────────────────┐");
-  Serial.println("│ Cmd │ Name       │ Description                 │");
-  Serial.println("├─────┼────────────┼─────────────────────────────┤");
-  Serial.println("│ a0  │ Bounce     │ Colorful bouncing balls     │");
-  Serial.println("│ a1  │ Spiral     │ Rainbow spiral vortex       │");
-  Serial.println("│ a2  │ Scatter    │ Particle storm convergence  │");
-  Serial.println("│ a3  │ Spin       │ Multi-ring color rotation   │");
-  Serial.println("│ a4  │ Random     │ Random selection each roll  │");
-  Serial.println("└─────┴────────────┴─────────────────────────────┘");
-  Serial.print("   Current: ");
-  Serial.print(currentAnimation);
-  Serial.print(" - ");
-  Serial.println(animationNames[currentAnimation]);
-  Serial.println();
-  Serial.println("   Enter animation number (0-4):");
+  safePrintln();
+  safePrintln("🎬 Available Animations:");
+  safePrintln("┌─────┬────────────┬─────────────────────────────┐");
+  safePrintln("│ Cmd │ Name       │ Description                 │");
+  safePrintln("├─────┼────────────┼─────────────────────────────┤");
+  safePrintln("│ a0  │ Bounce     │ Colorful bouncing balls     │");
+  safePrintln("│ a1  │ Spiral     │ Rainbow spiral vortex       │");
+  safePrintln("│ a2  │ Scatter    │ Particle storm convergence  │");
+  safePrintln("│ a3  │ Spin       │ Multi-ring color rotation   │");
+  safePrintln("│ a4  │ Random     │ Random selection each roll  │");
+  safePrintln("└─────┴────────────┴─────────────────────────────┘");
+  safePrint("   Current: ");
+  safePrint(currentAnimation);
+  safePrint(" - ");
+  safePrintln(animationNames[currentAnimation]);
+  safePrintln();
+  safePrintln("   Enter animation number (0-4):");
 }
 
 void setAnimation(uint8_t anim) {
   if (anim < NUM_ANIMATIONS) {
     currentAnimation = anim;
-    Serial.print("✅ Animation set to: ");
-    Serial.print(anim);
-    Serial.print(" - ");
-    Serial.println(animationNames[anim]);
+    safePrint("✅ Animation set to: ");
+    safePrint(anim);
+    safePrint(" - ");
+    safePrintln(animationNames[anim]);
   } else {
-    Serial.println("❌ Invalid animation number (0-4)");
+    safePrintln("❌ Invalid animation number (0-4)");
   }
 }
 
 void previewAnimation() {
-  Serial.print("👁️ Previewing animation: ");
-  Serial.println(animationNames[currentAnimation]);
+  safePrint("👁️ Previewing animation: ");
+  safePrintln(animationNames[currentAnimation]);
   rollAnimation();
   clearDisplay();
   pixels.show();
-  Serial.println("   Preview complete.");
+  safePrintln("   Preview complete.");
 }
 
 void showSettings() {
-  Serial.println();
-  Serial.println("⚙️ Current Settings:");
-  Serial.println("┌─────────────────────────────────────┐");
-  Serial.print("│ Animation:     ");
-  Serial.print(currentAnimation);
-  Serial.print(" - ");
-  Serial.print(animationNames[currentAnimation]);
-  for (uint i = 0; i < 12 - strlen(animationNames[currentAnimation]); i++) Serial.print(" ");
-  Serial.println("│");
-  Serial.print("│ Interval:      ");
-  Serial.print(displayInterval);
-  Serial.println(" ms             │");
-  Serial.print("│ Brightness:    Normal=");
-  Serial.print(BRIGHTNESS_NORMAL);
-  Serial.print(" Anim=");
-  Serial.print(BRIGHTNESS_ANIMATION);
-  Serial.println("   │");
-  Serial.print("│ Dice 1 Color:  RGB(");
-  Serial.print(DICE1_R); Serial.print(",");
-  Serial.print(DICE1_G); Serial.print(",");
-  Serial.print(DICE1_B); Serial.println(")       │");
-  Serial.print("│ Dice 2 Color:  RGB(");
-  Serial.print(DICE2_R); Serial.print(",");
-  Serial.print(DICE2_G); Serial.print(",");
-  Serial.print(DICE2_B); Serial.println(")       │");
-  Serial.print("│ Last Roll:     ");
-  Serial.print(dice1Result);
-  Serial.print(" + ");
-  Serial.print(dice2Result);
-  Serial.print(" = ");
+  safePrintln();
+  safePrintln("⚙️ Current Settings:");
+  safePrintln("┌─────────────────────────────────────┐");
+  safePrint("│ Animation:     ");
+  safePrint(currentAnimation);
+  safePrint(" - ");
+  safePrint(animationNames[currentAnimation]);
+  for (uint i = 0; i < 12 - strlen(animationNames[currentAnimation]); i++) safePrint(" ");
+  safePrintln("│");
+  safePrint("│ Interval:      ");
+  safePrint(displayInterval);
+  safePrintln(" ms             │");
+  safePrint("│ Brightness:    Normal=");
+  safePrint(BRIGHTNESS_NORMAL);
+  safePrint(" Anim=");
+  safePrint(BRIGHTNESS_ANIMATION);
+  safePrintln("   │");
+  safePrint("│ Dice 1 Color:  RGB(");
+  safePrint(DICE1_R); safePrint(",");
+  safePrint(DICE1_G); safePrint(",");
+  safePrint(DICE1_B); safePrintln(")       │");
+  safePrint("│ Dice 2 Color:  RGB(");
+  safePrint(DICE2_R); safePrint(",");
+  safePrint(DICE2_G); safePrint(",");
+  safePrint(DICE2_B); safePrintln(")       │");
+  safePrint("│ Last Roll:     ");
+  safePrint(dice1Result);
+  safePrint(" + ");
+  safePrint(dice2Result);
+  safePrint(" = ");
   uint8_t total = dice1Result + dice2Result;
-  if (total < 10) Serial.print(" ");
-  Serial.print(total);
-  Serial.println("           │");
-  Serial.println("└─────────────────────────────────────┘");
-  Serial.println();
-  Serial.print("│ Battery:       ");
-  Serial.print(batteryVoltage, 2);
-  Serial.print("V (");
-  Serial.print(batteryPercent);
-  Serial.println("%)         │");
-  Serial.print("│ Power Mode:    ");
-  if (criticalPowerMode) Serial.println("CRITICAL           │");
-  else if (lowPowerMode) Serial.println("LOW POWER          │");
-  else Serial.println("Normal             │");
+  if (total < 10) safePrint(" ");
+  safePrint(total);
+  safePrintln("           │");
+  safePrintln("└─────────────────────────────────────┘");
+  safePrintln();
+  safePrint("│ Battery:       ");
+  safePrint(batteryVoltage, 2);
+  safePrint("V (");
+  safePrint(batteryPercent);
+  safePrintln("%)         │");
+  safePrint("│ Power Mode:    ");
+  if (criticalPowerMode) safePrintln("CRITICAL           │");
+  else if (lowPowerMode) safePrintln("LOW POWER          │");
+  else safePrintln("Normal             │");
 }
 
 void showSensorData() {
@@ -1101,14 +1170,14 @@ void showSensorData() {
                           data.accelY * data.accelY + 
                           data.accelZ * data.accelZ);
     
-    Serial.println("📊 Sensor Data:");
-    Serial.print("   Accel X: "); Serial.print(data.accelX, 2); Serial.println(" mg");
-    Serial.print("   Accel Y: "); Serial.print(data.accelY, 2); Serial.println(" mg");
-    Serial.print("   Accel Z: "); Serial.print(data.accelZ, 2); Serial.println(" mg");
-    Serial.print("   Magnitude: "); Serial.print(magnitude, 2); Serial.println(" mg");
-    Serial.print("   Threshold: "); Serial.print(SHAKE_THRESHOLD); Serial.println(" mg");
-    Serial.print("   Temp: "); Serial.print(data.temperature, 1); Serial.println(" °C");
-    Serial.println();
+    safePrintln("📊 Sensor Data:");
+    safePrint("   Accel X: "); safePrint(data.accelX, 2); safePrintln(" mg");
+    safePrint("   Accel Y: "); safePrint(data.accelY, 2); safePrintln(" mg");
+    safePrint("   Accel Z: "); safePrint(data.accelZ, 2); safePrintln(" mg");
+    safePrint("   Magnitude: "); safePrint(magnitude, 2); safePrintln(" mg");
+    safePrint("   Threshold: "); safePrint(SHAKE_THRESHOLD); safePrintln(" mg");
+    safePrint("   Temp: "); safePrint(data.temperature, 1); safePrintln(" °C");
+    safePrintln();
   }
 }
 
@@ -1122,7 +1191,7 @@ void processCommand(char cmd) {
     if (cmd >= '0' && cmd <= '4') {
       setAnimation(cmd - '0');
     } else if (cmd != '\n' && cmd != '\r') {
-      Serial.println("❌ Invalid animation number. Use 0-4.");
+      safePrintln("❌ Invalid animation number. Use 0-4.");
     }
     return;
   }
@@ -1156,23 +1225,23 @@ void processCommand(char cmd) {
       drawDie(dice1Result, COLOR_DICE1);
       isDisplayingResult = true;
       lastDisplaySwitch = millis();
-      Serial.print("Dice 1 set to: ");
-      Serial.println(dice1Result);
+      safePrint("Dice 1 set to: ");
+      safePrintln(dice1Result);
       break;
     
     case '+':
       displayInterval += 100;
       if (displayInterval > 5000) displayInterval = 5000;
-      Serial.print("Display interval: ");
-      Serial.print(displayInterval);
-      Serial.println(" ms");
+      safePrint("Display interval: ");
+      safePrint(displayInterval);
+      safePrintln(" ms");
       break;
       
     case '-':
       if (displayInterval > 200) displayInterval -= 100;
-      Serial.print("Display interval: ");
-      Serial.print(displayInterval);
-      Serial.println(" ms");
+      safePrint("Display interval: ");
+      safePrint(displayInterval);
+      safePrintln(" ms");
       break;
     
     case 'h': case 'H': case '?':
@@ -1191,7 +1260,7 @@ void processCommand(char cmd) {
       clearDisplay();
       pixels.show();
       isDisplayingResult = false;
-      Serial.println("Display cleared.");
+      safePrintln("Display cleared.");
       break;
 
     case 'v': case 'V':
@@ -1283,13 +1352,13 @@ void enterLowPowerWarning() {
     showingBatteryWarning = true;
     isDisplayingResult = false;  // Stop dice display
     
-    Serial.println();
-    Serial.println("🪫 ════════════════════════════════════");
-    Serial.println("   LOW BATTERY WARNING");
-    Serial.println("   Showing battery indicator");
-    Serial.println("   Please charge soon!");
-    Serial.println("════════════════════════════════════ 🪫");
-    Serial.println();
+    safePrintln();
+    safePrintln("🪫 ════════════════════════════════════");
+    safePrintln("   LOW BATTERY WARNING");
+    safePrintln("   Showing battery indicator");
+    safePrintln("   Please charge soon!");
+    safePrintln("════════════════════════════════════ 🪫");
+    safePrintln();
     
     pixels.setBrightness(BRIGHTNESS_LOW_POWER);
     drawLowBattery(true);
@@ -1301,7 +1370,7 @@ void exitLowPowerWarning() {
     lowPowerMode = false;
     showingBatteryWarning = false;
     
-    Serial.println("✅ Battery recovered - Resuming normal operation");
+    safePrintln("✅ Battery recovered - Resuming normal operation");
     
     pixels.setBrightness(BRIGHTNESS_NORMAL);
     clearDisplay();
@@ -1334,18 +1403,18 @@ void updateBattery() {
   else if (batteryPercent > 10) icon = "🪫";
   else icon = "⚠️";
   
-  Serial.print(icon);
-  Serial.print(" Battery: ");
-  Serial.print(batteryVoltage, 2);
-  Serial.print("V (");
-  Serial.print(batteryPercent);
-  Serial.print("%) [");
+  safePrint(icon);
+  safePrint(" Battery: ");
+  safePrint(batteryVoltage, 2);
+  safePrint("V (");
+  safePrint(batteryPercent);
+  safePrint("%) [");
   
   int filled = batteryPercent / 10;
   for (int i = 0; i < 10; i++) {
-    Serial.print(i < filled ? "█" : "░");
+    safePrint(i < filled ? "█" : "░");
   }
-  Serial.println("]");
+  safePrintln("]");
   
   // State machine for battery levels
   if (batteryVoltage <= BATTERY_CRITICAL) {
@@ -1367,55 +1436,55 @@ void updateBattery() {
 }
 
 void showBatteryStatus() {
-  Serial.println();
-  Serial.println("🔋 Battery Status:");
-  Serial.println("┌─────────────────────────────────────┐");
-  Serial.print("│ Voltage:     ");
-  Serial.print(batteryVoltage, 2);
-  Serial.println(" V                 │");
-  Serial.print("│ Percentage:  ");
-  if (batteryPercent < 100) Serial.print(" ");
-  if (batteryPercent < 10) Serial.print(" ");
-  Serial.print(batteryPercent);
-  Serial.print("% [");
+  safePrintln();
+  safePrintln("🔋 Battery Status:");
+  safePrintln("┌─────────────────────────────────────┐");
+  safePrint("│ Voltage:     ");
+  safePrint(batteryVoltage, 2);
+  safePrintln(" V                 │");
+  safePrint("│ Percentage:  ");
+  if (batteryPercent < 100) safePrint(" ");
+  if (batteryPercent < 10) safePrint(" ");
+  safePrint(batteryPercent);
+  safePrint("% [");
   int filled = batteryPercent / 10;
   for (int i = 0; i < 10; i++) {
-    Serial.print(i < filled ? "█" : "░");
+    safePrint(i < filled ? "█" : "░");
   }
-  Serial.println("]  │");
-  Serial.print("│ Status:      ");
+  safePrintln("]  │");
+  safePrint("│ Status:      ");
   if (batteryVoltage <= BATTERY_CRITICAL) {
-    Serial.println("🚨 CRITICAL (sleep)    │");
+    safePrintln("🚨 CRITICAL (sleep)    │");
   } else if (batteryVoltage <= BATTERY_LOW) {
-    Serial.println("🪫 LOW (warning)       │");
+    safePrintln("🪫 LOW (warning)       │");
   } else if (batteryVoltage < BATTERY_NOMINAL) {
-    Serial.println("🟡 Below nominal       │");
+    safePrintln("🟡 Below nominal       │");
   } else if (batteryPercent > 75) {
-    Serial.println("✅ Excellent           │");
+    safePrintln("✅ Excellent           │");
   } else if (batteryPercent > 50) {
-    Serial.println("✅ Good                │");
+    safePrintln("✅ Good                │");
   } else {
-    Serial.println("🟡 Fair                │");
+    safePrintln("🟡 Fair                │");
   }
-  Serial.print("│ Mode:        ");
+  safePrint("│ Mode:        ");
   if (lowPowerMode) {
-    Serial.println("⚡ Low Power           │");
+    safePrintln("⚡ Low Power           │");
   } else {
-    Serial.println("⚡ Normal              │");
+    safePrintln("⚡ Normal              │");
   }
-  Serial.println("├─────────────────────────────────────┤");
-  Serial.println("│ Thresholds:                         │");
-  Serial.print("│   Full:      "); Serial.print(BATTERY_FULL, 1); Serial.println(" V                  │");
-  Serial.print("│   Nominal:   "); Serial.print(BATTERY_NOMINAL, 1); Serial.println(" V (wake target)   │");
-  Serial.print("│   Low:       "); Serial.print(BATTERY_LOW, 1); Serial.println(" V (warning)       │");
-  Serial.print("│   Critical:  "); Serial.print(BATTERY_CRITICAL, 1); Serial.println(" V (deep sleep)   │");
-  Serial.print("│   Shutdown:  "); Serial.print(BATTERY_SHUTDOWN, 1); Serial.println(" V                  │");
-  Serial.println("├─────────────────────────────────────┤");
-  Serial.print("│ Boot count:  ");
-  Serial.print(bootCount);
-  Serial.println("                        │");
-  Serial.println("└─────────────────────────────────────┘");
-  Serial.println();
+  safePrintln("├─────────────────────────────────────┤");
+  safePrintln("│ Thresholds:                         │");
+  safePrint("│   Full:      "); safePrint(BATTERY_FULL, 1); safePrintln(" V                  │");
+  safePrint("│   Nominal:   "); safePrint(BATTERY_NOMINAL, 1); safePrintln(" V (wake target)   │");
+  safePrint("│   Low:       "); safePrint(BATTERY_LOW, 1); safePrintln(" V (warning)       │");
+  safePrint("│   Critical:  "); safePrint(BATTERY_CRITICAL, 1); safePrintln(" V (deep sleep)   │");
+  safePrint("│   Shutdown:  "); safePrint(BATTERY_SHUTDOWN, 1); safePrintln(" V                  │");
+  safePrintln("├─────────────────────────────────────┤");
+  safePrint("│ Boot count:  ");
+  safePrint(bootCount);
+  safePrintln("                        │");
+  safePrintln("└─────────────────────────────────────┘");
+  safePrintln();
 }
 
 
@@ -1441,12 +1510,12 @@ String getBatteryBar(uint8_t percent) {
 void enterLowPowerMode() {
   if (!lowPowerMode) {
     lowPowerMode = true;
-    Serial.println();
-    Serial.println("⚠️ ════════════════════════════════════");
-    Serial.println("   LOW BATTERY - Entering power save");
-    Serial.println("   Reducing brightness to conserve power");
-    Serial.println("════════════════════════════════════ ⚠️");
-    Serial.println();
+    safePrintln();
+    safePrintln("⚠️ ════════════════════════════════════");
+    safePrintln("   LOW BATTERY - Entering power save");
+    safePrintln("   Reducing brightness to conserve power");
+    safePrintln("════════════════════════════════════ ⚠️");
+    safePrintln();
     
     pixels.setBrightness(BRIGHTNESS_LOW_POWER);
     displayInterval = 2000;  // Slower display switching
@@ -1456,7 +1525,7 @@ void enterLowPowerMode() {
 void exitLowPowerMode() {
   if (lowPowerMode && !criticalPowerMode) {
     lowPowerMode = false;
-    Serial.println("✅ Battery OK - Exiting power save mode");
+    safePrintln("✅ Battery OK - Exiting power save mode");
     pixels.setBrightness(BRIGHTNESS_NORMAL);
     displayInterval = DEFAULT_DISPLAY_INTERVAL;
   }
@@ -1467,12 +1536,12 @@ void enterCriticalPowerMode() {
     criticalPowerMode = true;
     lowPowerMode = true;
     
-    Serial.println();
-    Serial.println("🚨 ════════════════════════════════════");
-    Serial.println("   CRITICAL BATTERY - Minimal operation");
-    Serial.println("   Please charge immediately!");
-    Serial.println("════════════════════════════════════ 🚨");
-    Serial.println();
+    safePrintln();
+    safePrintln("🚨 ════════════════════════════════════");
+    safePrintln("   CRITICAL BATTERY - Minimal operation");
+    safePrintln("   Please charge immediately!");
+    safePrintln("════════════════════════════════════ 🚨");
+    safePrintln();
     
     // Minimal power - just show static display
     pixels.setBrightness(BRIGHTNESS_LOW_POWER);
@@ -1489,12 +1558,12 @@ void enterCriticalPowerMode() {
 }
 
 void shutdownDisplay() {
-  Serial.println();
-  Serial.println("💀 ════════════════════════════════════");
-  Serial.println("   BATTERY EMPTY - Shutting down display");
-  Serial.println("   Please charge to continue");
-  Serial.println("════════════════════════════════════ 💀");
-  Serial.println();
+  safePrintln();
+  safePrintln("💀 ════════════════════════════════════");
+  safePrintln("   BATTERY EMPTY - Shutting down display");
+  safePrintln("   Please charge to continue");
+  safePrintln("════════════════════════════════════ 💀");
+  safePrintln();
   
   // Fade out animation
   for (int b = pixels.getBrightness(); b >= 0; b--) {
@@ -1515,16 +1584,27 @@ void shutdownDisplay() {
 // SETUP & LOOP
 // ============================================
 
+
 void setup() {
   Serial.begin(115200);
-  delay(500);
   
-  Serial.println();
-  Serial.println("╔═══════════════════════════════════════╗");
-  Serial.println("║   🎲🎲 DUAL MOTION DIGITAL DICE 🎲🎲   ║");
-  Serial.println("║         v2.1 - Power Management       ║");
-  Serial.println("╚═══════════════════════════════════════╝");
-  Serial.println();
+  // Wait briefly to see if serial connects
+  unsigned long startWait = millis();
+  while (!Serial && (millis() - startWait < 1000)) {
+    delay(10);
+  }
+  
+  // Check if anything is listening
+  if (Serial) {
+    serialConnected = true;
+    lastSerialActivity = millis();
+  }
+  
+  safePrintln();
+  safePrintln("╔═══════════════════════════════════════╗");
+  safePrintln("║   🎲🎲 DUAL MOTION DIGITAL DICE 🎲🎲   ║");
+  safePrintln("╚═══════════════════════════════════════╝");
+  
   
   // Initialize battery monitoring FIRST
   pinMode(BATTERY_PIN, INPUT);
@@ -1541,34 +1621,34 @@ void setup() {
   COLOR_DICE1 = pixels.Color(DICE1_R, DICE1_G, DICE1_B);
   COLOR_DICE2 = pixels.Color(DICE2_R, DICE2_G, DICE2_B);
   
-  Serial.println("✅ LED Matrix initialized");
+  safePrintln("✅ LED Matrix initialized");
   
   // Initial battery check
   batteryVoltage = readBatteryVoltage();
   batteryPercent = voltageToPercent(batteryVoltage);
   
-  Serial.print("🔋 Battery: ");
-  Serial.print(batteryVoltage, 2);
-  Serial.print("V (");
-  Serial.print(batteryPercent);
-  Serial.println("%)");
+  safePrint("🔋 Battery: ");
+  safePrint(batteryVoltage, 2);
+  safePrint("V (");
+  safePrint(batteryPercent);
+  safePrintln("%)");
   
   // Check if battery is too low to operate
   if (batteryVoltage <= BATTERY_CRITICAL) {
-    Serial.println("⚠️ Battery too low for operation!");
+    safePrintln("⚠️ Battery too low for operation!");
     enterDeepSleep();
     // Never reaches here
   }
   
   // Initialize IMU
-  Serial.println("📍 Initializing QMI8658...");
+  safePrintln("📍 Initializing QMI8658...");
   bool imuSuccess = imu.begin(I2C_SDA, I2C_SCL);
   
   if (!imuSuccess) {
-    Serial.println("❌ QMI8658 init failed!");
-    Serial.println("   Continuing without motion control...");
+    safePrintln("❌ QMI8658 init failed!");
+    safePrintln("   Continuing without motion control...");
   } else {
-    Serial.println("✅ QMI8658 initialized");
+    safePrintln("✅ QMI8658 initialized");
     
     imu.setAccelRange(QMI8658_ACCEL_RANGE_8G);
     imu.setAccelODR(QMI8658_ACCEL_ODR_1000HZ);
@@ -1590,11 +1670,11 @@ void setup() {
     bootupAnimation();
   }
   
-  Serial.print("🎬 Default animation: ");
-  Serial.println(animationNames[currentAnimation]);
-  Serial.print("⏱️ Display interval: ");
-  Serial.print(displayInterval);
-  Serial.println(" ms");
+  safePrint("🎬 Default animation: ");
+  safePrintln(animationNames[currentAnimation]);
+  safePrint("⏱️ Display interval: ");
+  safePrint(displayInterval);
+  safePrintln(" ms");
   
   showHelp();
   
@@ -1605,6 +1685,9 @@ void setup() {
 }
 
 void loop() {
+  // Check serial connection status (also updates flag)
+  isSerialConnected();
+  
   // Always check battery first
   updateBattery();
   
@@ -1614,6 +1697,8 @@ void loop() {
     
     // Still allow serial commands in low power mode
     if (Serial.available() > 0) {
+      lastSerialActivity = millis();
+      serialConnected = true;
       char cmd = Serial.read();
       // Only allow limited commands in low power
       if (cmd == 'v' || cmd == 'V') {
@@ -1626,19 +1711,19 @@ void loop() {
     }
     
     delay(50);
-    return;  // Skip normal operations
+    return;
   }
   
-  // Normal operation below this point
-  
+  // Normal operation
   if (Serial.available() > 0) {
+    lastSerialActivity = millis();
+    serialConnected = true;
     char cmd = Serial.read();
     processCommand(cmd);
   }
   
-  
   if (detectShake()) {
-    Serial.println("📳 Shake detected!");
+    safePrintln("📳 Shake detected!");  // ← Safe print!
     rollDice();
   }
   
