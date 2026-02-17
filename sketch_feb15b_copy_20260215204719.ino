@@ -1,6 +1,28 @@
 #include <Adafruit_NeoPixel.h>
 #include <QMI8658.h>
 
+
+// ============================================
+// BATTERY MONITORING
+// ============================================
+#define BATTERY_PIN 5
+#define BATTERY_READ_INTERVAL 5000    // ms - how often to check battery
+
+// Voltage thresholds (adjust based on your battery/divider)
+#define BATTERY_FULL 4.2            // 100%
+#define BATTERY_NOMINAL 3.7         // ~50%
+#define BATTERY_LOW 3.6             // ~20% - warning
+#define BATTERY_CRITICAL 3.4          // ~5% - low power mode
+#define BATTERY_SHUTDOWN 3.3          // 0% - shutdown
+
+// ADC configuration (ESP32)
+#define ADC_RESOLUTION 4095.0         // 12-bit ADC
+#define ADC_REF_VOLTAGE 3.3           // ADC reference voltage
+#define VOLTAGE_DIVIDER_RATIO 2.0     // If using voltage divider (e.g., 2x 10k resistors)
+
+// Low power brightness
+#define BRIGHTNESS_LOW_POWER 1
+
 // LED Matrix config
 #define PIN 14
 #define NUMPIXELS 64
@@ -54,6 +76,13 @@ bool isDisplayingResult = false;
 uint8_t currentDisplayDice = 1;
 unsigned long lastDisplaySwitch = 0;
 unsigned long displayInterval = DEFAULT_DISPLAY_INTERVAL;
+
+// Battery monitoring
+float batteryVoltage = 0.0;
+uint8_t batteryPercent = 100;
+unsigned long lastBatteryRead = 0;
+bool lowPowerMode = false;
+bool criticalPowerMode = false;
 
 // Animation settings
 uint8_t currentAnimation = DEFAULT_ANIMATION;
@@ -703,6 +732,8 @@ void showHelp() {
   Serial.println("║    i / I        - Show settings       ║");
   Serial.println("║    s / S        - Show sensor data    ║");
   Serial.println("╚═══════════════════════════════════════╝");
+  Serial.println("║  POWER COMMANDS                       ║");
+  Serial.println("║    v / V        - Show battery status ║");
   Serial.println();
 }
 
@@ -784,6 +815,15 @@ void showSettings() {
   Serial.println("           │");
   Serial.println("└─────────────────────────────────────┘");
   Serial.println();
+  Serial.print("│ Battery:       ");
+  Serial.print(batteryVoltage, 2);
+  Serial.print("V (");
+  Serial.print(batteryPercent);
+  Serial.println("%)         │");
+  Serial.print("│ Power Mode:    ");
+  if (criticalPowerMode) Serial.println("CRITICAL           │");
+  else if (lowPowerMode) Serial.println("LOW POWER          │");
+  else Serial.println("Normal             │");
 }
 
 void showSensorData() {
@@ -885,6 +925,10 @@ void processCommand(char cmd) {
       isDisplayingResult = false;
       Serial.println("Display cleared.");
       break;
+
+    case 'v': case 'V':
+      showBatteryStatus();
+      break;
     
     case '\n': case '\r':
       break;
@@ -940,6 +984,201 @@ void updateAlternatingDisplay() {
 }
 
 // ============================================
+// BATTERY MONITORING FUNCTIONS
+// ============================================
+
+float readBatteryVoltage() {
+  // Take multiple readings for accuracy
+  long sum = 0;
+  for (int i = 0; i < 10; i++) {
+    sum += analogRead(BATTERY_PIN);
+    delay(2);
+  }
+  float avgReading = sum / 10.0;
+  
+  // Convert ADC reading to voltage
+  float voltage = (avgReading / ADC_RESOLUTION) * ADC_REF_VOLTAGE * VOLTAGE_DIVIDER_RATIO;
+  
+  return voltage;
+}
+
+uint8_t voltageToPercent(float voltage) {
+  if (voltage >= BATTERY_FULL) return 100;
+  if (voltage <= BATTERY_SHUTDOWN) return 0;
+  
+  // Linear approximation (can be improved with lookup table)
+  float percent = ((voltage - BATTERY_SHUTDOWN) / (BATTERY_FULL - BATTERY_SHUTDOWN)) * 100.0;
+  return (uint8_t)constrain(percent, 0, 100);
+}
+
+String getBatteryIcon(uint8_t percent) {
+  if (percent > 75) return "🔋";       // Full
+  if (percent > 50) return "🔋";       // Good
+  if (percent > 25) return "🪫";       // Low
+  if (percent > 10) return "🪫";       // Very low
+  return "⚠️";                         // Critical
+}
+
+String getBatteryBar(uint8_t percent) {
+  String bar = "[";
+  int filled = percent / 10;
+  for (int i = 0; i < 10; i++) {
+    if (i < filled) bar += "█";
+    else bar += "░";
+  }
+  bar += "]";
+  return bar;
+}
+
+void enterLowPowerMode() {
+  if (!lowPowerMode) {
+    lowPowerMode = true;
+    Serial.println();
+    Serial.println("⚠️ ════════════════════════════════════");
+    Serial.println("   LOW BATTERY - Entering power save");
+    Serial.println("   Reducing brightness to conserve power");
+    Serial.println("════════════════════════════════════ ⚠️");
+    Serial.println();
+    
+    pixels.setBrightness(BRIGHTNESS_LOW_POWER);
+    displayInterval = 2000;  // Slower display switching
+  }
+}
+
+void exitLowPowerMode() {
+  if (lowPowerMode && !criticalPowerMode) {
+    lowPowerMode = false;
+    Serial.println("✅ Battery OK - Exiting power save mode");
+    pixels.setBrightness(BRIGHTNESS_NORMAL);
+    displayInterval = DEFAULT_DISPLAY_INTERVAL;
+  }
+}
+
+void enterCriticalPowerMode() {
+  if (!criticalPowerMode) {
+    criticalPowerMode = true;
+    lowPowerMode = true;
+    
+    Serial.println();
+    Serial.println("🚨 ════════════════════════════════════");
+    Serial.println("   CRITICAL BATTERY - Minimal operation");
+    Serial.println("   Please charge immediately!");
+    Serial.println("════════════════════════════════════ 🚨");
+    Serial.println();
+    
+    // Minimal power - just show static display
+    pixels.setBrightness(BRIGHTNESS_LOW_POWER);
+    isDisplayingResult = false;
+    clearDisplay();
+    
+    // Show warning pattern (low battery indicator)
+    setPixel(3, 3, pixels.Color(255, 0, 0));
+    setPixel(4, 3, pixels.Color(255, 0, 0));
+    setPixel(3, 4, pixels.Color(255, 0, 0));
+    setPixel(4, 4, pixels.Color(255, 0, 0));
+    pixels.show();
+  }
+}
+
+void shutdownDisplay() {
+  Serial.println();
+  Serial.println("💀 ════════════════════════════════════");
+  Serial.println("   BATTERY EMPTY - Shutting down display");
+  Serial.println("   Please charge to continue");
+  Serial.println("════════════════════════════════════ 💀");
+  Serial.println();
+  
+  // Fade out animation
+  for (int b = pixels.getBrightness(); b >= 0; b--) {
+    pixels.setBrightness(b);
+    pixels.show();
+    delay(50);
+  }
+  
+  clearDisplay();
+  pixels.show();
+  isDisplayingResult = false;
+}
+
+void updateBattery() {
+  if (millis() - lastBatteryRead < BATTERY_READ_INTERVAL) {
+    return;
+  }
+  
+  lastBatteryRead = millis();
+  
+  float newVoltage = readBatteryVoltage();
+  batteryVoltage = newVoltage;
+  batteryPercent = voltageToPercent(batteryVoltage);
+  
+  // Print status
+  Serial.print(getBatteryIcon(batteryPercent));
+  Serial.print(" Battery: ");
+  Serial.print(batteryVoltage, 2);
+  Serial.print("V (");
+  Serial.print(batteryPercent);
+  Serial.print("%) ");
+  Serial.println(getBatteryBar(batteryPercent));
+  
+  // Check power states
+  if (batteryVoltage <= BATTERY_SHUTDOWN) {
+    shutdownDisplay();
+  } else if (batteryVoltage <= BATTERY_CRITICAL) {
+    enterCriticalPowerMode();
+  } else if (batteryVoltage <= BATTERY_LOW) {
+    enterLowPowerMode();
+  } else if (batteryVoltage > BATTERY_LOW + 0.1) {
+    // Hysteresis to prevent rapid switching
+    if (lowPowerMode && !criticalPowerMode) {
+      exitLowPowerMode();
+    }
+    if (criticalPowerMode && batteryVoltage > BATTERY_CRITICAL + 0.1) {
+      criticalPowerMode = false;
+      exitLowPowerMode();
+    }
+  }
+}
+
+void showBatteryStatus() {
+  Serial.println();
+  Serial.println("🔋 Battery Status:");
+  Serial.println("┌─────────────────────────────────────┐");
+  Serial.print("│ Voltage:    ");
+  Serial.print(batteryVoltage, 2);
+  Serial.println(" V                  │");
+  Serial.print("│ Percentage: ");
+  if (batteryPercent < 100) Serial.print(" ");
+  if (batteryPercent < 10) Serial.print(" ");
+  Serial.print(batteryPercent);
+  Serial.print("% ");
+  Serial.print(getBatteryBar(batteryPercent));
+  Serial.println("   │");
+  Serial.print("│ Status:     ");
+  if (criticalPowerMode) {
+    Serial.println("⚠️  CRITICAL            │");
+  } else if (lowPowerMode) {
+    Serial.println("🪫 LOW POWER            │");
+  } else if (batteryPercent > 75) {
+    Serial.println("✅ Excellent            │");
+  } else if (batteryPercent > 50) {
+    Serial.println("✅ Good                 │");
+  } else if (batteryPercent > 25) {
+    Serial.println("🟡 Fair                 │");
+  } else {
+    Serial.println("🟠 Low                  │");
+  }
+  Serial.println("├─────────────────────────────────────┤");
+  Serial.println("│ Thresholds:                         │");
+  Serial.print("│   Full:     "); Serial.print(BATTERY_FULL, 1); Serial.println(" V                   │");
+  Serial.print("│   Low:      "); Serial.print(BATTERY_LOW, 1); Serial.println(" V (power save)      │");
+  Serial.print("│   Critical: "); Serial.print(BATTERY_CRITICAL, 1); Serial.println(" V (minimal)        │");
+  Serial.print("│   Shutdown: "); Serial.print(BATTERY_SHUTDOWN, 1); Serial.println(" V                  │");
+  Serial.println("└─────────────────────────────────────┘");
+  Serial.println();
+}
+
+
+// ============================================
 // SETUP & LOOP
 // ============================================
 
@@ -985,6 +1224,20 @@ void setup() {
   
   randomSeed(analogRead(0));
   pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+    // Initialize battery monitoring
+  pinMode(BATTERY_PIN, INPUT);
+  analogReadResolution(12);  // ESP32: 12-bit resolution
+  
+  // Initial battery read
+  batteryVoltage = readBatteryVoltage();
+  batteryPercent = voltageToPercent(batteryVoltage);
+  
+  Serial.print("🔋 Battery: ");
+  Serial.print(batteryVoltage, 2);
+  Serial.print("V (");
+  Serial.print(batteryPercent);
+  Serial.println("%)");
   
   // Run epic bootup animation!
   bootupAnimation();
@@ -1018,4 +1271,12 @@ void loop() {
   updateAlternatingDisplay();
   
   delay(10);
+  // Check battery status
+  updateBattery();
+  // Skip dice operations in critical mode
+  if (criticalPowerMode) {
+    delay(100);  // Slower loop in critical mode
+    return;
+  }
+
 }
