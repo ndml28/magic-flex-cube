@@ -7,6 +7,7 @@
 // ============================================
 #define BATTERY_PIN 5
 #define BATTERY_READ_INTERVAL 5000    // ms - how often to check battery
+#define POLL_INTERVALL_LOOP 200 // ms - main loop
 
 // Voltage thresholds
 #define BATTERY_FULL 4.2              // 100%
@@ -1647,5 +1648,5 @@ void loop() {
   
   updateAlternatingDisplay();
   
-  delay(10);
+  delay(POLL_INTERVALL_LOOP);
 }
