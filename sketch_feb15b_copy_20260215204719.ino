@@ -1517,6 +1517,7 @@ void shutdownDisplay() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.setTxTimeoutMs(0);
   delay(500);
   
   Serial.println();
