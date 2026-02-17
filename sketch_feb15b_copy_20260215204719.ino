@@ -10,9 +10,9 @@
 #define POLL_INTERVALL_LOOP 20 // ms - main loop
 
 // Voltage thresholds
-#define BATTERY_FULL 4.2              // 100%
-#define BATTERY_NOMINAL 3.7           // ~50% - required to exit sleep
-#define BATTERY_LOW 3.4               // ~20% - warning symbol
+#define BATTERY_FULL 4.2              // USB Powered
+#define BATTERY_NOMINAL 3.7           // 100% - required to exit sleep
+#define BATTERY_LOW 3.4               // ~50% - warning symbol
 #define BATTERY_CRITICAL 3.2          // ~5% - deep sleep mode
 #define BATTERY_SHUTDOWN 3.0          // 0% - won't wake up
 
@@ -1273,7 +1273,7 @@ float readBatteryVoltage() {
 uint8_t voltageToPercent(float voltage) {
   if (voltage >= BATTERY_FULL) return 100;
   if (voltage <= BATTERY_SHUTDOWN) return 0;
-  float percent = ((voltage - BATTERY_SHUTDOWN) / (BATTERY_FULL - BATTERY_SHUTDOWN)) * 100.0;
+  float percent = ((voltage - BATTERY_SHUTDOWN) / (BATTERY_NOMINAL - BATTERY_SHUTDOWN)) * 100.0;
   return (uint8_t)constrain(percent, 0, 100);
 }
 
