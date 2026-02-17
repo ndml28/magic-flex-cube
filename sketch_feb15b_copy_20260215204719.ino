@@ -8,21 +8,25 @@
 #define BATTERY_PIN 5
 #define BATTERY_READ_INTERVAL 5000    // ms - how often to check battery
 
-// Voltage thresholds (adjust based on your battery/divider)
-#define BATTERY_FULL 4.2            // 100%
-#define BATTERY_NOMINAL 3.7         // ~50%
-#define BATTERY_LOW 3.6             // ~20% - warning
-#define BATTERY_CRITICAL 3.4          // ~5% - low power mode
-#define BATTERY_SHUTDOWN 3.3          // 0% - shutdown
+// Voltage thresholds
+#define BATTERY_FULL 4.2              // 100%
+#define BATTERY_NOMINAL 3.7           // ~50% - required to exit sleep
+#define BATTERY_LOW 3.4               // ~20% - warning symbol
+#define BATTERY_CRITICAL 3.2          // ~5% - deep sleep mode
+#define BATTERY_SHUTDOWN 3.0          // 0% - won't wake up
 
 // ADC configuration (ESP32)
-#define ADC_RESOLUTION 4095.0         // 12-bit ADC
-#define ADC_REF_VOLTAGE 3.3           // ADC reference voltage
-#define VOLTAGE_DIVIDER_RATIO 2.0     // If using voltage divider (e.g., 2x 10k resistors)
+#define ADC_RESOLUTION 4095.0
+#define ADC_REF_VOLTAGE 3.3
+#define VOLTAGE_DIVIDER_RATIO 2.0
 
-// Low power brightness
+// Low power settings
 #define BRIGHTNESS_LOW_POWER 1
+#define DEEP_SLEEP_DURATION 10        // seconds between wake checks
+#define BATTERY_SYMBOL_BLINK 1000     // ms - blink interval for low battery
 
+// Deep sleep
+#define uS_TO_S_FACTOR 1000000ULL     // Conversion factor for micro seconds to seconds
 // LED Matrix config
 #define PIN 14
 #define NUMPIXELS 64
@@ -80,9 +84,17 @@ unsigned long displayInterval = DEFAULT_DISPLAY_INTERVAL;
 // Battery monitoring
 float batteryVoltage = 0.0;
 uint8_t batteryPercent = 100;
+bool criticalPowerMode = false;
 unsigned long lastBatteryRead = 0;
 bool lowPowerMode = false;
-bool criticalPowerMode = false;
+bool showingBatteryWarning = false;
+unsigned long lastBatteryBlink = 0;
+bool batteryBlinkState = false;
+
+// Deep sleep tracking
+RTC_DATA_ATTR int bootCount = 0;      // Survives deep sleep
+RTC_DATA_ATTR bool wasInDeepSleep = false;
+
 
 // Animation settings
 uint8_t currentAnimation = DEFAULT_ANIMATION;
@@ -134,6 +146,261 @@ uint32_t randomBrightColor() {
     default: return pixels.Color(255, 255, 255); // White
   }
 }
+
+
+// ============================================
+// BATTERY SYMBOL DISPLAY
+// ============================================
+
+// Draw battery outline on 8x8 matrix
+void drawBatterySymbol(uint8_t fillLevel, uint32_t outlineColor, uint32_t fillColor) {
+  clearDisplay();
+  
+  // Battery outline (6x4 with nub)
+  // Shape:
+  //   ██████░░
+  //   █    █░█
+  //   █    █░█
+  //   █    █░█
+  //   █    █░█
+  //   ██████░░
+  
+  // Top edge
+  for (int x = 0; x < 6; x++) setPixel(x, 1, outlineColor);
+  
+  // Bottom edge  
+  for (int x = 0; x < 6; x++) setPixel(x, 6, outlineColor);
+  
+  // Left edge
+  for (int y = 1; y <= 6; y++) setPixel(0, y, outlineColor);
+  
+  // Right edge
+  for (int y = 1; y <= 6; y++) setPixel(5, y, outlineColor);
+  
+  // Battery nub (positive terminal)
+  setPixel(6, 2, outlineColor);
+  setPixel(6, 3, outlineColor);
+  setPixel(6, 4, outlineColor);
+  setPixel(6, 5, outlineColor);
+  setPixel(7, 3, outlineColor);
+  setPixel(7, 4, outlineColor);
+  
+  // Fill level (0-4 bars)
+  // Fill area is x: 1-4, y: 2-5 (4 columns)
+  for (int i = 0; i < fillLevel && i < 4; i++) {
+    int x = 1 + i;
+    for (int y = 2; y <= 5; y++) {
+      setPixel(x, y, fillColor);
+    }
+  }
+  
+  pixels.show();
+}
+
+
+
+// ============================================
+// DEEP SLEEP FUNCTIONS
+// ============================================
+
+void printWakeupReason() {
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch (wakeup_reason) {
+    case ESP_SLEEP_WAKEUP_EXT0:
+      Serial.println("   Wakeup: External signal (RTC_IO)");
+      break;
+    case ESP_SLEEP_WAKEUP_EXT1:
+      Serial.println("   Wakeup: External signal (RTC_CNTL)");
+      break;
+    case ESP_SLEEP_WAKEUP_TIMER:
+      Serial.println("   Wakeup: Timer");
+      break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD:
+      Serial.println("   Wakeup: Touchpad");
+      break;
+    case ESP_SLEEP_WAKEUP_ULP:
+      Serial.println("   Wakeup: ULP program");
+      break;
+    default:
+      Serial.println("   Wakeup: Power on / Reset");
+      break;
+  }
+}
+
+void enterDeepSleep() {
+  Serial.println();
+  Serial.println("😴 ════════════════════════════════════");
+  Serial.println("   CRITICAL BATTERY - Entering deep sleep");
+  Serial.print("   Will check again in ");
+  Serial.print(DEEP_SLEEP_DURATION);
+  Serial.println(" seconds");
+  Serial.println("   Need >");
+  Serial.print(BATTERY_NOMINAL);
+  Serial.println("V to resume operation");
+  Serial.println("════════════════════════════════════ 😴");
+  Serial.println();
+  
+  // Show empty battery symbol before sleep
+  pixels.setBrightness(BRIGHTNESS_LOW_POWER);
+  drawEmptyBattery();
+  delay(2000);
+  
+  // Fade out
+  for (int b = BRIGHTNESS_LOW_POWER; b >= 0; b--) {
+    pixels.setBrightness(b);
+    pixels.show();
+    delay(100);
+  }
+  
+  // Turn off display completely
+  clearDisplay();
+  pixels.show();
+  
+  // Mark that we're going to deep sleep
+  wasInDeepSleep = true;
+  
+  // Configure wakeup timer
+  esp_sleep_enable_timer_wakeup(DEEP_SLEEP_DURATION * uS_TO_S_FACTOR);
+  
+  Serial.println("Going to sleep now...");
+  Serial.flush();
+  
+  // Enter deep sleep
+  esp_deep_sleep_start();
+}
+
+// Check battery on wakeup and decide what to do
+bool checkBatteryOnWakeup() {
+  // Quick battery read
+  delay(100);  // Let ADC stabilize
+  batteryVoltage = readBatteryVoltage();
+  batteryPercent = voltageToPercent(batteryVoltage);
+  
+  Serial.println();
+  Serial.println("🔋 Wake-up battery check:");
+  Serial.print("   Voltage: ");
+  Serial.print(batteryVoltage, 2);
+  Serial.println("V");
+  Serial.print("   Required: >");
+  Serial.print(BATTERY_NOMINAL, 1);
+  Serial.println("V");
+  
+  if (batteryVoltage >= BATTERY_NOMINAL) {
+    Serial.println("   ✅ Battery OK - Resuming normal operation!");
+    return true;  // Continue with normal boot
+  } else if (batteryVoltage <= BATTERY_SHUTDOWN) {
+    Serial.println("   💀 Battery too low - Staying in sleep");
+    return false;  // Go back to sleep
+  } else {
+    Serial.println("   ⚠️ Battery still low - Going back to sleep");
+    return false;  // Go back to sleep
+  }
+}
+
+// Handle wakeup from deep sleep
+void handleWakeup() {
+  bootCount++;
+  
+  Serial.println();
+  Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  Serial.print("   Boot count: ");
+  Serial.println(bootCount);
+  printWakeupReason();
+  Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  
+  if (wasInDeepSleep) {
+    Serial.println("   Woke from deep sleep - checking battery...");
+    
+    // Initialize just enough to read battery and show display
+    pixels.begin();
+    pixels.setBrightness(BRIGHTNESS_LOW_POWER);
+    
+    if (!checkBatteryOnWakeup()) {
+      // Show brief battery status before sleeping again
+      drawEmptyBattery();
+      delay(1000);
+      
+      // Go back to sleep
+      enterDeepSleep();
+      // Never reaches here
+    }
+    
+    // Battery OK - continue with normal boot
+    wasInDeepSleep = false;
+    Serial.println("   Continuing to normal boot sequence...");
+  }
+}
+
+
+// Draw empty red battery (critical warning)
+void drawEmptyBattery() {
+  uint32_t red = pixels.Color(255, 0, 0);
+  uint32_t darkRed = pixels.Color(60, 0, 0);
+  drawBatterySymbol(0, red, darkRed);
+}
+
+// Draw low battery with 1 bar blinking
+void drawLowBattery(bool blinkOn) {
+  uint32_t red = pixels.Color(255, 0, 0);
+  uint32_t orange = pixels.Color(255, 80, 0);
+  
+  if (blinkOn) {
+    drawBatterySymbol(1, red, orange);
+  } else {
+    drawBatterySymbol(0, red, red);
+  }
+}
+
+// Draw battery based on percentage
+void drawBatteryLevel() {
+  uint32_t green = pixels.Color(0, 255, 0);
+  uint32_t yellow = pixels.Color(255, 255, 0);
+  uint32_t orange = pixels.Color(255, 128, 0);
+  uint32_t red = pixels.Color(255, 0, 0);
+  
+  uint8_t bars;
+  uint32_t outlineColor;
+  uint32_t fillColor;
+  
+  if (batteryPercent > 75) {
+    bars = 4;
+    outlineColor = green;
+    fillColor = green;
+  } else if (batteryPercent > 50) {
+    bars = 3;
+    outlineColor = green;
+    fillColor = green;
+  } else if (batteryPercent > 25) {
+    bars = 2;
+    outlineColor = yellow;
+    fillColor = yellow;
+  } else if (batteryPercent > 10) {
+    bars = 1;
+    outlineColor = orange;
+    fillColor = orange;
+  } else {
+    bars = 0;
+    outlineColor = red;
+    fillColor = red;
+  }
+  
+  drawBatterySymbol(bars, outlineColor, fillColor);
+}
+
+// Update battery warning display (called from loop)
+void updateBatteryWarningDisplay() {
+  if (!showingBatteryWarning) return;
+  
+  if (millis() - lastBatteryBlink >= BATTERY_SYMBOL_BLINK) {
+    lastBatteryBlink = millis();
+    batteryBlinkState = !batteryBlinkState;
+    
+    pixels.setBrightness(BRIGHTNESS_LOW_POWER);
+    drawLowBattery(batteryBlinkState);
+  }
+}
+
 
 // Interpolate between two colors
 uint32_t lerpColor(uint32_t color1, uint32_t color2, float t) {
@@ -987,29 +1254,169 @@ void updateAlternatingDisplay() {
 // BATTERY MONITORING FUNCTIONS
 // ============================================
 
+// ============================================
+// BATTERY MONITORING (Updated)
+// ============================================
+
 float readBatteryVoltage() {
-  // Take multiple readings for accuracy
   long sum = 0;
   for (int i = 0; i < 10; i++) {
     sum += analogRead(BATTERY_PIN);
     delay(2);
   }
   float avgReading = sum / 10.0;
-  
-  // Convert ADC reading to voltage
   float voltage = (avgReading / ADC_RESOLUTION) * ADC_REF_VOLTAGE * VOLTAGE_DIVIDER_RATIO;
-  
   return voltage;
 }
 
 uint8_t voltageToPercent(float voltage) {
   if (voltage >= BATTERY_FULL) return 100;
   if (voltage <= BATTERY_SHUTDOWN) return 0;
-  
-  // Linear approximation (can be improved with lookup table)
   float percent = ((voltage - BATTERY_SHUTDOWN) / (BATTERY_FULL - BATTERY_SHUTDOWN)) * 100.0;
   return (uint8_t)constrain(percent, 0, 100);
 }
+
+void enterLowPowerWarning() {
+  if (!lowPowerMode) {
+    lowPowerMode = true;
+    showingBatteryWarning = true;
+    isDisplayingResult = false;  // Stop dice display
+    
+    Serial.println();
+    Serial.println("🪫 ════════════════════════════════════");
+    Serial.println("   LOW BATTERY WARNING");
+    Serial.println("   Showing battery indicator");
+    Serial.println("   Please charge soon!");
+    Serial.println("════════════════════════════════════ 🪫");
+    Serial.println();
+    
+    pixels.setBrightness(BRIGHTNESS_LOW_POWER);
+    drawLowBattery(true);
+  }
+}
+
+void exitLowPowerWarning() {
+  if (lowPowerMode) {
+    lowPowerMode = false;
+    showingBatteryWarning = false;
+    
+    Serial.println("✅ Battery recovered - Resuming normal operation");
+    
+    pixels.setBrightness(BRIGHTNESS_NORMAL);
+    clearDisplay();
+    pixels.show();
+    
+    // Show last dice result
+    if (dice1Result > 0) {
+      isDisplayingResult = true;
+      currentDisplayDice = 1;
+      drawDie(dice1Result, COLOR_DICE1);
+    }
+  }
+}
+
+void updateBattery() {
+  if (millis() - lastBatteryRead < BATTERY_READ_INTERVAL) {
+    return;
+  }
+  
+  lastBatteryRead = millis();
+  
+  batteryVoltage = readBatteryVoltage();
+  batteryPercent = voltageToPercent(batteryVoltage);
+  
+  // Print status
+  String icon;
+  if (batteryPercent > 75) icon = "🔋";
+  else if (batteryPercent > 50) icon = "🔋";
+  else if (batteryPercent > 25) icon = "🪫";
+  else if (batteryPercent > 10) icon = "🪫";
+  else icon = "⚠️";
+  
+  Serial.print(icon);
+  Serial.print(" Battery: ");
+  Serial.print(batteryVoltage, 2);
+  Serial.print("V (");
+  Serial.print(batteryPercent);
+  Serial.print("%) [");
+  
+  int filled = batteryPercent / 10;
+  for (int i = 0; i < 10; i++) {
+    Serial.print(i < filled ? "█" : "░");
+  }
+  Serial.println("]");
+  
+  // State machine for battery levels
+  if (batteryVoltage <= BATTERY_CRITICAL) {
+    // CRITICAL - Enter deep sleep
+    enterDeepSleep();
+    // Never reaches here (deep sleep)
+    
+  } else if (batteryVoltage <= BATTERY_LOW) {
+    // LOW - Show warning symbol
+    enterLowPowerWarning();
+    
+  } else if (batteryVoltage >= BATTERY_NOMINAL) {
+    // NOMINAL or above - Normal operation
+    if (lowPowerMode) {
+      exitLowPowerWarning();
+    }
+  }
+  // Hysteresis: between LOW and NOMINAL, maintain current state
+}
+
+void showBatteryStatus() {
+  Serial.println();
+  Serial.println("🔋 Battery Status:");
+  Serial.println("┌─────────────────────────────────────┐");
+  Serial.print("│ Voltage:     ");
+  Serial.print(batteryVoltage, 2);
+  Serial.println(" V                 │");
+  Serial.print("│ Percentage:  ");
+  if (batteryPercent < 100) Serial.print(" ");
+  if (batteryPercent < 10) Serial.print(" ");
+  Serial.print(batteryPercent);
+  Serial.print("% [");
+  int filled = batteryPercent / 10;
+  for (int i = 0; i < 10; i++) {
+    Serial.print(i < filled ? "█" : "░");
+  }
+  Serial.println("]  │");
+  Serial.print("│ Status:      ");
+  if (batteryVoltage <= BATTERY_CRITICAL) {
+    Serial.println("🚨 CRITICAL (sleep)    │");
+  } else if (batteryVoltage <= BATTERY_LOW) {
+    Serial.println("🪫 LOW (warning)       │");
+  } else if (batteryVoltage < BATTERY_NOMINAL) {
+    Serial.println("🟡 Below nominal       │");
+  } else if (batteryPercent > 75) {
+    Serial.println("✅ Excellent           │");
+  } else if (batteryPercent > 50) {
+    Serial.println("✅ Good                │");
+  } else {
+    Serial.println("🟡 Fair                │");
+  }
+  Serial.print("│ Mode:        ");
+  if (lowPowerMode) {
+    Serial.println("⚡ Low Power           │");
+  } else {
+    Serial.println("⚡ Normal              │");
+  }
+  Serial.println("├─────────────────────────────────────┤");
+  Serial.println("│ Thresholds:                         │");
+  Serial.print("│   Full:      "); Serial.print(BATTERY_FULL, 1); Serial.println(" V                  │");
+  Serial.print("│   Nominal:   "); Serial.print(BATTERY_NOMINAL, 1); Serial.println(" V (wake target)   │");
+  Serial.print("│   Low:       "); Serial.print(BATTERY_LOW, 1); Serial.println(" V (warning)       │");
+  Serial.print("│   Critical:  "); Serial.print(BATTERY_CRITICAL, 1); Serial.println(" V (deep sleep)   │");
+  Serial.print("│   Shutdown:  "); Serial.print(BATTERY_SHUTDOWN, 1); Serial.println(" V                  │");
+  Serial.println("├─────────────────────────────────────┤");
+  Serial.print("│ Boot count:  ");
+  Serial.print(bootCount);
+  Serial.println("                        │");
+  Serial.println("└─────────────────────────────────────┘");
+  Serial.println();
+}
+
 
 String getBatteryIcon(uint8_t percent) {
   if (percent > 75) return "🔋";       // Full
@@ -1100,82 +1507,7 @@ void shutdownDisplay() {
   isDisplayingResult = false;
 }
 
-void updateBattery() {
-  if (millis() - lastBatteryRead < BATTERY_READ_INTERVAL) {
-    return;
-  }
-  
-  lastBatteryRead = millis();
-  
-  float newVoltage = readBatteryVoltage();
-  batteryVoltage = newVoltage;
-  batteryPercent = voltageToPercent(batteryVoltage);
-  
-  // Print status
-  Serial.print(getBatteryIcon(batteryPercent));
-  Serial.print(" Battery: ");
-  Serial.print(batteryVoltage, 2);
-  Serial.print("V (");
-  Serial.print(batteryPercent);
-  Serial.print("%) ");
-  Serial.println(getBatteryBar(batteryPercent));
-  
-  // Check power states
-  if (batteryVoltage <= BATTERY_SHUTDOWN) {
-    shutdownDisplay();
-  } else if (batteryVoltage <= BATTERY_CRITICAL) {
-    enterCriticalPowerMode();
-  } else if (batteryVoltage <= BATTERY_LOW) {
-    enterLowPowerMode();
-  } else if (batteryVoltage > BATTERY_LOW + 0.1) {
-    // Hysteresis to prevent rapid switching
-    if (lowPowerMode && !criticalPowerMode) {
-      exitLowPowerMode();
-    }
-    if (criticalPowerMode && batteryVoltage > BATTERY_CRITICAL + 0.1) {
-      criticalPowerMode = false;
-      exitLowPowerMode();
-    }
-  }
-}
 
-void showBatteryStatus() {
-  Serial.println();
-  Serial.println("🔋 Battery Status:");
-  Serial.println("┌─────────────────────────────────────┐");
-  Serial.print("│ Voltage:    ");
-  Serial.print(batteryVoltage, 2);
-  Serial.println(" V                  │");
-  Serial.print("│ Percentage: ");
-  if (batteryPercent < 100) Serial.print(" ");
-  if (batteryPercent < 10) Serial.print(" ");
-  Serial.print(batteryPercent);
-  Serial.print("% ");
-  Serial.print(getBatteryBar(batteryPercent));
-  Serial.println("   │");
-  Serial.print("│ Status:     ");
-  if (criticalPowerMode) {
-    Serial.println("⚠️  CRITICAL            │");
-  } else if (lowPowerMode) {
-    Serial.println("🪫 LOW POWER            │");
-  } else if (batteryPercent > 75) {
-    Serial.println("✅ Excellent            │");
-  } else if (batteryPercent > 50) {
-    Serial.println("✅ Good                 │");
-  } else if (batteryPercent > 25) {
-    Serial.println("🟡 Fair                 │");
-  } else {
-    Serial.println("🟠 Low                  │");
-  }
-  Serial.println("├─────────────────────────────────────┤");
-  Serial.println("│ Thresholds:                         │");
-  Serial.print("│   Full:     "); Serial.print(BATTERY_FULL, 1); Serial.println(" V                   │");
-  Serial.print("│   Low:      "); Serial.print(BATTERY_LOW, 1); Serial.println(" V (power save)      │");
-  Serial.print("│   Critical: "); Serial.print(BATTERY_CRITICAL, 1); Serial.println(" V (minimal)        │");
-  Serial.print("│   Shutdown: "); Serial.print(BATTERY_SHUTDOWN, 1); Serial.println(" V                  │");
-  Serial.println("└─────────────────────────────────────┘");
-  Serial.println();
-}
 
 
 // ============================================
@@ -1184,14 +1516,21 @@ void showBatteryStatus() {
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(500);
   
   Serial.println();
   Serial.println("╔═══════════════════════════════════════╗");
   Serial.println("║   🎲🎲 DUAL MOTION DIGITAL DICE 🎲🎲   ║");
-  Serial.println("║         v2.0 - Rainbow Edition        ║");
+  Serial.println("║         v2.1 - Power Management       ║");
   Serial.println("╚═══════════════════════════════════════╝");
   Serial.println();
+  
+  // Initialize battery monitoring FIRST
+  pinMode(BATTERY_PIN, INPUT);
+  analogReadResolution(12);
+  
+  // Handle wakeup from deep sleep (may not return if going back to sleep)
+  handleWakeup();
   
   // Initialize LED matrix
   pixels.begin();
@@ -1202,6 +1541,23 @@ void setup() {
   COLOR_DICE2 = pixels.Color(DICE2_R, DICE2_G, DICE2_B);
   
   Serial.println("✅ LED Matrix initialized");
+  
+  // Initial battery check
+  batteryVoltage = readBatteryVoltage();
+  batteryPercent = voltageToPercent(batteryVoltage);
+  
+  Serial.print("🔋 Battery: ");
+  Serial.print(batteryVoltage, 2);
+  Serial.print("V (");
+  Serial.print(batteryPercent);
+  Serial.println("%)");
+  
+  // Check if battery is too low to operate
+  if (batteryVoltage <= BATTERY_CRITICAL) {
+    Serial.println("⚠️ Battery too low for operation!");
+    enterDeepSleep();
+    // Never reaches here
+  }
   
   // Initialize IMU
   Serial.println("📍 Initializing QMI8658...");
@@ -1224,23 +1580,14 @@ void setup() {
   
   randomSeed(analogRead(0));
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-
-    // Initialize battery monitoring
-  pinMode(BATTERY_PIN, INPUT);
-  analogReadResolution(12);  // ESP32: 12-bit resolution
   
-  // Initial battery read
-  batteryVoltage = readBatteryVoltage();
-  batteryPercent = voltageToPercent(batteryVoltage);
-  
-  Serial.print("🔋 Battery: ");
-  Serial.print(batteryVoltage, 2);
-  Serial.print("V (");
-  Serial.print(batteryPercent);
-  Serial.println("%)");
-  
-  // Run epic bootup animation!
-  bootupAnimation();
+  // Check if battery is low (but not critical) - show warning
+  if (batteryVoltage <= BATTERY_LOW) {
+    enterLowPowerWarning();
+  } else {
+    // Run epic bootup animation only if battery is OK!
+    bootupAnimation();
+  }
   
   Serial.print("🎬 Default animation: ");
   Serial.println(animationNames[currentAnimation]);
@@ -1249,10 +1596,40 @@ void setup() {
   Serial.println(" ms");
   
   showHelp();
-  rollDice();
+  
+  // Only auto-roll if not in low power mode
+  if (!lowPowerMode) {
+    rollDice();
+  }
 }
 
 void loop() {
+  // Always check battery first
+  updateBattery();
+  
+  // Update battery warning display if active
+  if (showingBatteryWarning) {
+    updateBatteryWarningDisplay();
+    
+    // Still allow serial commands in low power mode
+    if (Serial.available() > 0) {
+      char cmd = Serial.read();
+      // Only allow limited commands in low power
+      if (cmd == 'v' || cmd == 'V') {
+        showBatteryStatus();
+      } else if (cmd == 'h' || cmd == 'H' || cmd == '?') {
+        showHelp();
+      } else if (cmd == 'i' || cmd == 'I') {
+        showSettings();
+      }
+    }
+    
+    delay(50);
+    return;  // Skip normal operations
+  }
+  
+  // Normal operation below this point
+  
   if (Serial.available() > 0) {
     char cmd = Serial.read();
     processCommand(cmd);
@@ -1271,12 +1648,4 @@ void loop() {
   updateAlternatingDisplay();
   
   delay(10);
-  // Check battery status
-  updateBattery();
-  // Skip dice operations in critical mode
-  if (criticalPowerMode) {
-    delay(100);  // Slower loop in critical mode
-    return;
-  }
-
 }
