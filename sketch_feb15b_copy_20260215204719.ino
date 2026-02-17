@@ -43,7 +43,7 @@
 // CONFIGURABLE SETTINGS
 // ============================================
 #define DEFAULT_DISPLAY_INTERVAL 1000
-#define DEFAULT_ANIMATION 0
+#define DEFAULT_ANIMATION 4
 
 // Brightness settings
 #define BRIGHTNESS_NORMAL 2
