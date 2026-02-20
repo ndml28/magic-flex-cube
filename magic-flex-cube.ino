@@ -11,9 +11,9 @@
 #define BATTERY_PIN 5
 #define BATTERY_READ_INTERVAL 15000
 #define POLL_INTERVAL_ACTIVE 12
-#define POLL_INTERVAL_IDLE 88
-#define IDLE_TIMEOUT 6000
-#define IDLE_DEEP_SLEEP_TIMEOUT 30000
+#define POLL_INTERVAL_IDLE 48
+#define IDLE_TIMEOUT 30000
+#define IDLE_DEEP_SLEEP_TIMEOUT 310000
 
 #define BATTERY_FULL 4.2f
 #define BATTERY_NOMINAL 3.7f
@@ -33,7 +33,7 @@
 #define BRIGHTNESS_SHAKE 20
 
 #define DEEP_SLEEP_BATTERY 30
-#define DEEP_SLEEP_IDLE 10
+#define DEEP_SLEEP_IDLE 20
 #define uS_TO_S_FACTOR 1000000ULL
 
 #define LED_PIN 14
@@ -90,7 +90,12 @@ RTC_DATA_ATTR float sleepAccelX = 0, sleepAccelY = 0, sleepAccelZ = 0;
 uint8_t currentAnimation = DEFAULT_ANIMATION;
 const char* animationNames[] = {
   "Bounce", "Spiral", "Scatter", "Spin", "Plasma",
-  "Explode", "Glitch", "Wave", "Firework", "Matrix", "Pulse", "Random"
+  "Explode", "Glitch", "Wave", "Firework", "Matrix", 
+  "Pulse", "Random",
+  // Neue:
+  "PingPong", "Snake", "Nuke", "Fraunhofer", "Rocket",
+  "PP", "Skyscraper", "Tetris", "PacMan", "Invaders",
+  "Heart", "DNA", "Hourglass", "Smiley"
 };
 
 enum ShakeState { SHAKE_IDLE, SHAKE_DETECTING, SHAKE_ACTIVE, SHAKE_ROLLING };
@@ -611,36 +616,57 @@ void saveOrientation() {
 }
 
 bool checkOrientationChanged() {
+  // Vollständige IMU-Initialisierung (wie in initIMU)
   if (!imu.begin(I2C_SDA, I2C_SCL)) {
     dbgln("⚠️ IMU Init fehlgeschlagen");
     return true;
   }
   
   Wire.setClock(100000);
-  delay(50);
+  delay(100);  // Längeres Delay nach Begin
   
+  // Komplette Konfiguration wie in initIMU()
   imu.setAccelRange(QMI8658_ACCEL_RANGE_4G);
   imu.setAccelODR(QMI8658_ACCEL_ODR_125HZ);
   imu.setAccelUnit_mg(true);
-  imu.enableSensors(QMI8658_ENABLE_ACCEL);
-  delay(50);
-
+  imu.setGyroRange(QMI8658_GYRO_RANGE_256DPS);
+  imu.setGyroODR(QMI8658_GYRO_ODR_125HZ);
+  imu.setGyroUnit_dps(true);
+  imu.enableSensors(QMI8658_ENABLE_ACCEL | QMI8658_ENABLE_GYRO);
+  
+  delay(150);  // Warten bis Sensor stabil
+  
+  // WICHTIG: Erste Lesungen verwerfen (Aufwärm-Phase)
+  QMI8658_Data dummy;
+  for (int i = 0; i < 10; i++) {
+    imu.readSensorData(dummy);
+    delay(20);
+  }
+  
+  // Jetzt echte Messungen mitteln
   float sumX = 0, sumY = 0, sumZ = 0;
   int validReadings = 0;
   
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 10; i++) {
     QMI8658_Data d;
     if (imu.readSensorData(d)) {
-      sumX += d.accelX;
-      sumY += d.accelY;
-      sumZ += d.accelZ;
-      validReadings++;
+      // Plausibilitätsprüfung: Werte müssen im normalen Bereich sein
+      if (abs(d.accelX) < 3000 && abs(d.accelY) < 3000 && abs(d.accelZ) < 3000) {
+        sumX += d.accelX;
+        sumY += d.accelY;
+        sumZ += d.accelZ;
+        validReadings++;
+      }
     }
     delay(20);
   }
   
-  if (validReadings == 0) {
-    dbgln("⚠️ Keine IMU-Daten");
+  // Nicht genug gültige Lesungen = Sensor-Problem
+  if (validReadings < 5) {
+    dbg("⚠️ Nur ");
+    dbg(validReadings);
+    dbgln(" gültige IMU-Lesungen - nehme Bewegung an");
+    disableIMU();
     return true;
   }
   
@@ -653,10 +679,27 @@ bool checkOrientationChanged() {
   float deltaZ = abs(avgZ - sleepAccelZ);
   float totalDelta = deltaX + deltaY + deltaZ;
   
+  // Debug-Ausgabe
+  dbg("   Gespeichert: X=");
+  dbgf(sleepAccelX, 0);
+  dbg(" Y=");
+  dbgf(sleepAccelY, 0);
+  dbg(" Z=");
+  dbgf(sleepAccelZ, 0);
+  dbgln();
+  
+  dbg("   Aktuell:     X=");
+  dbgf(avgX, 0);
+  dbg(" Y=");
+  dbgf(avgY, 0);
+  dbg(" Z=");
+  dbgf(avgZ, 0);
+  dbgln();
+  
   dbg("   Orientierung: delta=");
   dbgf(totalDelta, 0);
   dbg(" (threshold=");
-  dbg(ORIENTATION_THRESHOLD);
+  dbgf(ORIENTATION_THRESHOLD, 2);
   dbgln(")");
   
   disableIMU();
@@ -697,6 +740,9 @@ bool checkShaking() {
 // ============================================
 // DEEP SLEEP
 // ============================================
+// ============================================
+// DEEP SLEEP - KORRIGIERT
+// ============================================
 void enterDeepSleep(uint8_t reason, uint32_t seconds) {
   printLine('=');
   if (reason == 1) {
@@ -707,8 +753,11 @@ void enterDeepSleep(uint8_t reason, uint32_t seconds) {
   dbg("   Dauer: ");
   dbg(seconds);
   dbgln(" Sekunden");
+  dbg("   Reason: ");
+  dbgln(reason);
   printLine('=');
   
+  // In RTC Memory speichern
   sleepReason = reason;
   
   if (reason == 2) {
@@ -727,40 +776,75 @@ void enterDeepSleep(uint8_t reason, uint32_t seconds) {
   esp_deep_sleep_start();
 }
 
+
 void handleWakeup() {
-  if (sleepReason == 0) return;
+  // Prüfen ob es wirklich ein Deep Sleep Wakeup war
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
   
+  // Kein Deep Sleep Wakeup -> normaler Boot
+  if (wakeup_reason != ESP_SLEEP_WAKEUP_TIMER) {
+    dbgln("🔄 Normaler Boot (kein Deep Sleep)");
+    sleepReason = 0;  // Reset für sauberen Zustand
+    bootCount = 0;
+    return;
+  }
+  
+  // Deep Sleep Wakeup!
   bootCount++;
-  delay(50);
-  
-  float v = readBattQuick();
   
   dbgln();
   printLine('=');
-  dbg("🔔 WAKEUP aus ");
-  dbgln(sleepReason == 1 ? "Battery-Sleep" : "Idle-Sleep");
+  dbg("🔔 DEEP SLEEP WAKEUP #");
+  dbgln(bootCount);
+  dbg("   Sleep Reason: ");
+  dbgln(sleepReason);
+  
+  delay(50);
+  float v = readBattQuick();
+  
   dbg("   Spannung: ");
   dbgf(v, 2);
   dbgln("V");
   printLine('-');
   
+  // Battery Sleep (reason == 1)
   if (sleepReason == 1) {
     if (v >= BATTERY_NOMINAL) {
       dbgln("   ✅ Batterie OK - Normaler Start");
       sleepReason = 0;
       return;
     }
+    if (v < BATTERY_NOT_PRESENT) {
+      dbgln("   ✅ USB angeschlossen - Normaler Start");
+      sleepReason = 0;
+      return;
+    }
     dbgln("   ❌ Batterie noch kritisch - weiter schlafen");
+    printLine('=');
+    
+    // Kurz rotes Batterie-Symbol zeigen
+    FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);
+    ledSetBrightness(BRIGHTNESS_LOW_POWER);
+    drawBatt(0, 0xFF0000, 0);
+    delay(500);
+    ledOff();
+    
     enterDeepSleep(1, DEEP_SLEEP_BATTERY);
+    return;  // Wird nie erreicht
   }
   
+  // Idle Sleep (reason == 2)
   if (sleepReason == 2) {
+    // Erst Batterie checken
     if (v <= BATTERY_CRITICAL && v >= BATTERY_NOT_PRESENT) {
       dbgln("   ⚠️ Batterie kritisch geworden!");
       enterDeepSleep(1, DEEP_SLEEP_BATTERY);
+      return;
     }
     
+    // IMU initialisieren für Orientierungsprüfung
     dbgln("   Prüfe Orientierungsänderung...");
+    
     if (checkOrientationChanged()) {
       dbgln("   ✅ Bewegung erkannt - Aufwachen!");
       sleepReason = 0;
@@ -768,9 +852,16 @@ void handleWakeup() {
     }
     
     dbgln("   ❌ Keine Änderung - weiter schlafen");
+    printLine('=');
     enterDeepSleep(2, DEEP_SLEEP_IDLE);
+    return;  // Wird nie erreicht
   }
+  
+  // Unbekannter Reason -> normaler Boot
+  dbgln("   ⚠️ Unbekannter Reason - Normaler Start");
+  sleepReason = 0;
 }
+
 
 // ============================================
 // ANIMATIONS
@@ -808,6 +899,990 @@ void animBounce() {
     ledShowSafe();
     delay(30);
   }
+  animEnd();
+}
+
+// ============================================
+// NEUE ANIMATIONEN
+// ============================================
+
+// Ping-Pong Spiel
+void animPingPong() {
+  animStart();
+  float ballX = 4, ballY = 4;
+  float velX = 0.4f, velY = 0.3f;
+  int paddle1 = 3, paddle2 = 3;
+  int score1 = 0, score2 = 0;
+  
+  for (int f = 0; f < 80; f++) {
+    ledClear();
+    
+    // Paddles (links und rechts)
+    for (int i = 0; i < 3; i++) {
+      setPixel(0, constrain(paddle1 + i, 0, 7), 0x00FF00);
+      setPixel(7, constrain(paddle2 + i, 0, 7), 0x00FF00);
+    }
+    
+    // Ball bewegen
+    ballX += velX;
+    ballY += velY;
+    
+    // Paddle-KI
+    if (f % 3 == 0) {
+      if (ballY > paddle1 + 1) paddle1 = min(5, paddle1 + 1);
+      if (ballY < paddle1 + 1) paddle1 = max(0, paddle1 - 1);
+      if (ballY > paddle2 + 1) paddle2 = min(5, paddle2 + 1);
+      if (ballY < paddle2 + 1) paddle2 = max(0, paddle2 - 1);
+    }
+    
+    // Kollision oben/unten
+    if (ballY <= 0 || ballY >= 7) velY *= -1;
+    
+    // Kollision Paddle links
+    if (ballX <= 1 && ballY >= paddle1 && ballY <= paddle1 + 2) {
+      velX = abs(velX) * 1.05f;
+      velY += (ballY - paddle1 - 1) * 0.1f;
+    }
+    // Kollision Paddle rechts
+    if (ballX >= 6 && ballY >= paddle2 && ballY <= paddle2 + 2) {
+      velX = -abs(velX) * 1.05f;
+      velY += (ballY - paddle2 - 1) * 0.1f;
+    }
+    
+    // Tor
+    if (ballX < 0 || ballX > 7) {
+      // Flash
+      ledFill(ballX < 0 ? 0x0000FF : 0xFF0000);
+      ledShowSafe();
+      delay(100);
+      ballX = 4; ballY = 4;
+      velX = (ballX < 0) ? 0.4f : -0.4f;
+      velY = (random(2) ? 1 : -1) * 0.3f;
+    }
+    
+    // Ball zeichnen
+    setPixel(constrain((int)ballX, 0, 7), constrain((int)ballY, 0, 7), 0xFFFFFF);
+    
+    ledShowSafe();
+    delay(40);
+  }
+  animEnd();
+}
+
+// Snake Animation
+void animSnake() {
+  animStart();
+  
+  int8_t snakeX[20] = {3, 2, 1};
+  int8_t snakeY[20] = {4, 4, 4};
+  int snakeLen = 3;
+  int8_t dirX = 1, dirY = 0;
+  int8_t foodX = 6, foodY = 4;
+  
+  for (int f = 0; f < 60; f++) {
+    ledClear();
+    
+    // Richtung ändern (pseudo-KI zum Futter)
+    if (f % 4 == 0) {
+      if (random(3) == 0) {
+        // Zufällige Richtungsänderung
+        if (dirX != 0) { dirX = 0; dirY = random(2) ? 1 : -1; }
+        else { dirY = 0; dirX = random(2) ? 1 : -1; }
+      } else {
+        // Zum Futter steuern
+        if (abs(snakeX[0] - foodX) > abs(snakeY[0] - foodY)) {
+          dirX = (foodX > snakeX[0]) ? 1 : -1; dirY = 0;
+        } else {
+          dirY = (foodY > snakeY[0]) ? 1 : -1; dirX = 0;
+        }
+      }
+    }
+    
+    // Snake bewegen
+    for (int i = snakeLen - 1; i > 0; i--) {
+      snakeX[i] = snakeX[i-1];
+      snakeY[i] = snakeY[i-1];
+    }
+    snakeX[0] = (snakeX[0] + dirX + 8) % 8;
+    snakeY[0] = (snakeY[0] + dirY + 8) % 8;
+    
+    // Futter essen
+    if (snakeX[0] == foodX && snakeY[0] == foodY) {
+      if (snakeLen < 15) snakeLen++;
+      foodX = random(8);
+      foodY = random(8);
+      // Flash
+      ledFill(0x00FF00);
+      ledShowSafe();
+      delay(50);
+    }
+    
+    // Snake zeichnen
+    for (int i = 0; i < snakeLen; i++) {
+      uint32_t col = hsv((i * 15) % 256, 255, 255 - i * 10);
+      setPixel(snakeX[i], snakeY[i], col);
+    }
+    
+    // Kopf heller
+    setPixel(snakeX[0], snakeY[0], 0xFFFFFF);
+    
+    // Futter blinkt
+    if (f % 4 < 2) setPixel(foodX, foodY, 0xFF0000);
+    
+    ledShowSafe();
+    delay(80);
+  }
+  animEnd();
+}
+
+// Atombombe - Explosion mit Pilzwolke
+void animNuke() {
+  animStart();
+  
+  // Bombe fällt
+  for (int y = 0; y < 6; y++) {
+    ledClear();
+    setPixel(3, y, 0x888888);
+    setPixel(4, y, 0x888888);
+    if (y > 0) setPixel(3, y-1, 0x444444);
+    ledShowSafe();
+    delay(60);
+  }
+  
+  // Aufprall - weißer Flash
+  ledFill(0xFFFFFF);
+  ledShowSafe();
+  delay(100);
+  
+  // Explosion expandiert
+  for (int r = 0; r < 5; r++) {
+    ledClear();
+    for (int x = 0; x < 8; x++) {
+      for (int y = 0; y < 8; y++) {
+        float dist = sqrt((x - 3.5f) * (x - 3.5f) + (y - 5.5f) * (y - 5.5f));
+        if (dist <= r + 1) {
+          uint8_t bright = 255 - (r * 30);
+          setPixel(x, y, ledColor(bright, bright * 0.6f, 0));
+        }
+      }
+    }
+    ledShowSafe();
+    delay(50);
+  }
+  
+  // Pilzwolke aufsteigen
+  for (int f = 0; f < 25; f++) {
+    ledClear();
+    
+    // Stiel
+    int stemTop = max(2, 6 - f / 3);
+    for (int y = 7; y >= stemTop; y--) {
+      uint8_t br = 150 - (7 - y) * 15;
+      setPixel(3, y, ledColor(br, br * 0.4f, 0));
+      setPixel(4, y, ledColor(br, br * 0.4f, 0));
+    }
+    
+    // Pilzkopf
+    int cloudY = max(0, stemTop - 2);
+    int cloudSize = min(3, 1 + f / 6);
+    for (int dx = -cloudSize; dx <= cloudSize; dx++) {
+      for (int dy = -1; dy <= 1; dy++) {
+        int px = 3 + dx, py = cloudY + dy;
+        if (px >= 0 && px < 8 && py >= 0 && py < 8) {
+          float dist = sqrt(dx * dx + dy * dy * 2);
+          if (dist <= cloudSize + 0.5f) {
+            uint8_t br = 200 - dist * 30;
+            setPixel(px, py, ledColor(br, br * 0.3f + random(30), random(20)));
+          }
+        }
+      }
+    }
+    
+    // Partikel
+    for (int p = 0; p < 3; p++) {
+      setPixel(random(8), random(4), ledColor(255, random(100), 0));
+    }
+    
+    ledShowSafe();
+    delay(70);
+  }
+  
+  // Fade out
+  for (int f = 0; f < 10; f++) {
+    for (int i = 0; i < NUMPIXELS; i++) leds[i].fadeToBlackBy(50);
+    ledShowSafe();
+    delay(50);
+  }
+  
+  animEnd();
+}
+
+// Fraunhofer Logo (stilisiertes "e" mit Bogen)
+void animFraunhofer() {
+  animStart();
+  
+  // Das Fraunhofer "e" - vereinfacht auf 8x8
+  const uint8_t logo[8] = {
+    0b00111100,  // Oberer Bogen
+    0b01111110,
+    0b01100000,  // Querbalken
+    0b01111110,
+    0b01111110,
+    0b01100000,
+    0b01111110,
+    0b00111100   // Unterer Bogen
+  };
+  
+  // Aufbau von links nach rechts
+  for (int col = 0; col < 8; col++) {
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x <= col; x++) {
+        if (logo[y] & (1 << (7 - x))) {
+          setPixel(x, y, 0x179C7D);  // Fraunhofer Grün
+        }
+      }
+    }
+    ledShowSafe();
+    delay(80);
+  }
+  
+  delay(300);
+  
+  // Pulsieren
+  for (int p = 0; p < 6; p++) {
+    uint8_t br = (p % 2 == 0) ? 255 : 150;
+    ledClear();
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x < 8; x++) {
+        if (logo[y] & (1 << (7 - x))) {
+          setPixel(x, y, ledColor(0, br * 0.6f, br * 0.5f));
+        }
+      }
+    }
+    ledShowSafe();
+    delay(150);
+  }
+  
+  // Regenbogen-Sweep
+  for (int f = 0; f < 30; f++) {
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x < 8; x++) {
+        if (logo[y] & (1 << (7 - x))) {
+          setPixel(x, y, rainbow((x * 20 + y * 10 + f * 8) % 256));
+        }
+      }
+    }
+    ledShowSafe();
+    delay(40);
+  }
+  
+  animEnd();
+}
+
+// Rakete startet
+void animRocket() {
+  animStart();
+  
+  // Rakete (3 Pixel breit, 4 hoch)
+  // Countdown
+  for (int c = 3; c >= 1; c--) {
+    ledClear();
+    // Zahl in Mitte
+    if (c == 3) { dot(3, 3, 0xFF0000); }
+    else if (c == 2) { dot(3, 2, 0xFFFF00); dot(3, 4, 0xFFFF00); }
+    else { dot(3, 3, 0x00FF00); }
+    ledShowSafe();
+    delay(400);
+  }
+  
+  // Start!
+  ledFill(0xFFFFFF);
+  ledShowSafe();
+  delay(50);
+  
+  // Rakete steigt auf
+  for (int rocketY = 6; rocketY >= -5; rocketY--) {
+    ledClear();
+    
+    // Flammen (unter der Rakete)
+    for (int fy = rocketY + 4; fy < min(8, rocketY + 7); fy++) {
+      if (fy >= 0 && fy < 8) {
+        setPixel(3, fy, ledColor(255, random(100, 200), 0));
+        if (random(2)) setPixel(2, fy, ledColor(255, random(50, 150), 0));
+        if (random(2)) setPixel(4, fy, ledColor(255, random(50, 150), 0));
+      }
+    }
+    
+    // Raketenkörper
+    for (int ry = 0; ry < 4; ry++) {
+      int py = rocketY + ry;
+      if (py >= 0 && py < 8) {
+        if (ry == 0) {
+          // Spitze
+          setPixel(3, py, 0xFFFFFF);
+        } else {
+          // Körper
+          setPixel(2, py, 0xCCCCCC);
+          setPixel(3, py, 0xFFFFFF);
+          setPixel(4, py, 0xCCCCCC);
+        }
+      }
+    }
+    
+    // Flügel
+    if (rocketY + 3 >= 0 && rocketY + 3 < 8) {
+      setPixel(1, rocketY + 3, 0xFF0000);
+      setPixel(5, rocketY + 3, 0xFF0000);
+    }
+    
+    // Rauch-Trail
+    for (int s = 0; s < 3; s++) {
+      int sy = rocketY + 5 + s + random(2);
+      if (sy >= 0 && sy < 8) {
+        setPixel(3 + random(-1, 2), sy, ledColor(80, 80, 80));
+      }
+    }
+    
+    ledShowSafe();
+    delay(rocketY > 2 ? 100 : 60);  // Beschleunigen
+  }
+  
+  // Sterne nach dem Start
+  for (int f = 0; f < 15; f++) {
+    ledClear();
+    for (int s = 0; s < 8; s++) {
+      setPixel(random(8), random(8), random(2) ? 0xFFFFFF : 0x444444);
+    }
+    ledShowSafe();
+    delay(60);
+  }
+  
+  animEnd();
+}
+
+// Männliches Glied (diskret aber erkennbar)
+void animPP() {
+  animStart();
+  
+  // Aufbau
+  const uint8_t shape[8] = {
+    0b00011000,
+    0b00111100,
+    0b00111100,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00111100,
+    0b01100110
+  };
+  
+  // Von unten aufbauen
+  uint32_t skinColor = 0xFFAA88;
+  for (int row = 7; row >= 0; row--) {
+    for (int y = row; y < 8; y++) {
+      for (int x = 0; x < 8; x++) {
+        if (shape[y] & (1 << (7 - x))) {
+          setPixel(x, y, skinColor);
+        }
+      }
+    }
+    ledShowSafe();
+    delay(80);
+  }
+  
+  delay(200);
+  
+  // Pulsieren
+  for (int p = 0; p < 8; p++) {
+    uint32_t col = (p % 2 == 0) ? 0xFFAA88 : 0xFF7766;
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x < 8; x++) {
+        if (shape[y] & (1 << (7 - x))) {
+          setPixel(x, y, col);
+        }
+      }
+    }
+    ledShowSafe();
+    delay(150);
+  }
+  
+  // Regenbogen (Pride!)
+  for (int f = 0; f < 20; f++) {
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x < 8; x++) {
+        if (shape[y] & (1 << (7 - x))) {
+          setPixel(x, y, rainbow((y * 30 + f * 10) % 256));
+        }
+      }
+    }
+    ledShowSafe();
+    delay(50);
+  }
+  
+  animEnd();
+}
+
+// Wolkenkratzer wird gebaut
+void animSkyscraper() {
+  animStart();
+  
+  // Gebäude von unten aufbauen
+  for (int height = 0; height < 8; height++) {
+    int buildY = 7 - height;
+    
+    // Kran oben
+    if (buildY > 0) {
+      ledClear();
+      
+      // Bisheriges Gebäude
+      for (int y = 7; y > buildY; y--) {
+        for (int x = 2; x <= 5; x++) {
+          // Fenster-Muster
+          bool isWindow = ((x + y) % 2 == 0);
+          setPixel(x, y, isWindow ? 0xFFFF00 : 0x444488);
+        }
+      }
+      
+      // Kran
+      setPixel(3, buildY - 1, 0xFF8800);
+      setPixel(4, buildY - 1, 0xFF8800);
+      for (int kx = 0; kx < 7; kx++) {
+        setPixel(kx, max(0, buildY - 2), 0x888888);
+      }
+      
+      // Bauarbeiter-Blinklicht
+      if (height % 2 == 0) setPixel(6, max(0, buildY - 2), 0xFF0000);
+      
+      ledShowSafe();
+      delay(80);
+    }
+    
+    // Etage bauen (von links nach rechts)
+    for (int x = 2; x <= 5; x++) {
+      ledClear();
+      
+      // Bisheriges Gebäude
+      for (int y = 7; y >= buildY; y--) {
+        for (int bx = 2; bx <= 5; bx++) {
+          if (y > buildY || bx < x) {
+            bool isWindow = ((bx + y) % 2 == 0);
+            setPixel(bx, y, isWindow ? 0xFFFF00 : 0x444488);
+          }
+        }
+      }
+      
+      // Aktueller Block
+      setPixel(x, buildY, 0xFFFFFF);
+      
+      ledShowSafe();
+      delay(60);
+    }
+  }
+  
+  // Fertiges Gebäude blinkt
+  for (int f = 0; f < 10; f++) {
+    for (int y = 0; y < 8; y++) {
+      for (int x = 2; x <= 5; x++) {
+        bool isWindow = ((x + y) % 2 == 0);
+        bool lightOn = isWindow && (random(3) > 0);
+        setPixel(x, y, lightOn ? 0xFFFF00 : 0x222244);
+      }
+    }
+    ledShowSafe();
+    delay(200);
+  }
+  
+  animEnd();
+}
+
+// Tetris-Blöcke fallen
+void animTetris() {
+  animStart();
+  
+  uint8_t grid[8] = {0};
+  
+  // Tetris-Formen (I, O, T, L)
+  const uint8_t shapes[4][4] = {
+    {0b1111, 0b0000, 0b0000, 0b0000},  // I
+    {0b0110, 0b0110, 0b0000, 0b0000},  // O
+    {0b0010, 0b0110, 0b0010, 0b0000},  // T
+    {0b0100, 0b0100, 0b0110, 0b0000}   // L
+  };
+  const uint32_t colors[4] = {0x00FFFF, 0xFFFF00, 0xFF00FF, 0xFF8800};
+  
+  for (int block = 0; block < 6; block++) {
+    int type = random(4);
+    int posX = random(3, 5);
+    uint32_t col = colors[type];
+    
+    // Block fällt
+    for (int posY = 0; posY < 8; posY++) {
+      // Kollisionsprüfung
+      bool canFall = true;
+      for (int sy = 0; sy < 4; sy++) {
+        for (int sx = 0; sx < 4; sx++) {
+          if (shapes[type][sy] & (1 << (3 - sx))) {
+            int checkY = posY + sy + 1;
+            if (checkY >= 8 || (checkY >= 0 && (grid[checkY] & (1 << (posX + sx))))) {
+              canFall = false;
+            }
+          }
+        }
+      }
+      
+      // Zeichnen
+      ledClear();
+      // Grid
+      for (int y = 0; y < 8; y++) {
+        for (int x = 0; x < 8; x++) {
+          if (grid[y] & (1 << x)) {
+            setPixel(x, y, 0x444444);
+          }
+        }
+      }
+      // Aktueller Block
+      for (int sy = 0; sy < 4; sy++) {
+        for (int sx = 0; sx < 4; sx++) {
+          if (shapes[type][sy] & (1 << (3 - sx))) {
+            int px = posX + sx, py = posY + sy;
+            if (py >= 0 && py < 8 && px >= 0 && px < 8) {
+              setPixel(px, py, col);
+            }
+          }
+        }
+      }
+      ledShowSafe();
+      
+      if (!canFall) {
+        // Block fixieren
+        for (int sy = 0; sy < 4; sy++) {
+          for (int sx = 0; sx < 4; sx++) {
+            if (shapes[type][sy] & (1 << (3 - sx))) {
+              int py = posY + sy;
+              if (py >= 0 && py < 8) {
+                grid[py] |= (1 << (posX + sx));
+              }
+            }
+          }
+        }
+        break;
+      }
+      
+      delay(80);
+    }
+  }
+  
+  // Zeilen blinken lassen
+  for (int f = 0; f < 6; f++) {
+    ledClear();
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x < 8; x++) {
+        if (grid[y] & (1 << x)) {
+          setPixel(x, y, (f % 2 == 0) ? rainbow(y * 30) : 0x222222);
+        }
+      }
+    }
+    ledShowSafe();
+    delay(100);
+  }
+  
+  animEnd();
+}
+
+// Pac-Man Animation
+void animPacMan() {
+  animStart();
+  
+  int pacX = -2;
+  int mouthOpen = 0;
+  int ghostX = -6;
+  
+  for (int f = 0; f < 50; f++) {
+    ledClear();
+    
+    // Punkte
+    for (int x = 0; x < 8; x += 2) {
+      if (x > pacX + 2) {
+        setPixel(x, 3, 0xFFFF00);
+        setPixel(x, 4, 0xFFFF00);
+      }
+    }
+    
+    // Pac-Man
+    mouthOpen = (f / 3) % 2;
+    for (int dx = 0; dx < 5; dx++) {
+      for (int dy = 0; dy < 5; dy++) {
+        int px = pacX + dx, py = 2 + dy;
+        if (px >= 0 && px < 8) {
+          float dist = sqrt((dx - 2) * (dx - 2) + (dy - 2) * (dy - 2));
+          bool isMouth = mouthOpen && (dx > 2) && (abs(dy - 2) <= 1);
+          if (dist <= 2.3f && !isMouth) {
+            setPixel(px, py, 0xFFFF00);
+          }
+        }
+      }
+    }
+    // Auge
+    if (pacX + 1 >= 0 && pacX + 1 < 8) setPixel(pacX + 2, 2, 0x000000);
+    
+    // Geist
+    for (int dx = 0; dx < 4; dx++) {
+      for (int dy = 0; dy < 5; dy++) {
+        int gx = ghostX + dx, gy = 2 + dy;
+        if (gx >= 0 && gx < 8) {
+          if (dy < 4 || (dx % 2 == f / 4 % 2)) {
+            setPixel(gx, gy, 0xFF0000);
+          }
+        }
+      }
+    }
+    // Geist-Augen
+    if (ghostX + 1 >= 0 && ghostX + 1 < 8) setPixel(ghostX + 1, 3, 0xFFFFFF);
+    if (ghostX + 2 >= 0 && ghostX + 2 < 8) setPixel(ghostX + 2, 3, 0xFFFFFF);
+    
+    pacX++;
+    ghostX++;
+    if (pacX > 10) { pacX = -4; ghostX = -8; }
+    
+    ledShowSafe();
+    delay(70);
+  }
+  
+  animEnd();
+}
+
+// Space Invaders
+void animInvaders() {
+  animStart();
+  
+  // Invader-Sprites (5x3)
+  const uint8_t invader1[3] = {0b01010, 0b11111, 0b10101};
+  const uint8_t invader2[3] = {0b10001, 0b01110, 0b01010};
+  
+  int invaderX = 1;
+  int invaderY = 0;
+  int dirX = 1;
+  int shipX = 3;
+  int bulletY = -1;
+  int bulletX = 0;
+  int frame = 0;
+  
+  for (int f = 0; f < 70; f++) {
+    ledClear();
+    frame = (f / 5) % 2;
+    
+    // Invaders zeichnen (2 Reihen)
+    for (int row = 0; row < 2; row++) {
+      const uint8_t* sprite = (row == 0) ? invader1 : invader2;
+      for (int sy = 0; sy < 3; sy++) {
+        for (int sx = 0; sx < 5; sx++) {
+          if (sprite[sy] & (1 << (4 - sx))) {
+            int px = invaderX + sx + (frame && sy == 2 ? (sx % 2 ? -1 : 1) : 0);
+            int py = invaderY + row * 3 + sy;
+            if (px >= 0 && px < 8 && py >= 0 && py < 8) {
+              setPixel(px, py, row == 0 ? 0x00FF00 : 0x00FFFF);
+            }
+          }
+        }
+      }
+    }
+    
+    // Invader bewegen
+    if (f % 8 == 0) {
+      invaderX += dirX;
+      if (invaderX <= 0 || invaderX >= 3) {
+        dirX = -dirX;
+        invaderY++;
+      }
+    }
+    
+    // Spieler-Schiff
+    setPixel(shipX, 7, 0xFFFFFF);
+    setPixel(shipX - 1, 7, 0x888888);
+    setPixel(shipX + 1, 7, 0x888888);
+    
+    // Schiff bewegen
+    if (f % 4 == 0) {
+      if (random(3) == 0) shipX += random(-1, 2);
+      shipX = constrain(shipX, 1, 6);
+    }
+    
+    // Schießen
+    if (bulletY < 0 && random(5) == 0) {
+      bulletY = 6;
+      bulletX = shipX;
+    }
+    if (bulletY >= 0) {
+      setPixel(bulletX, bulletY, 0xFFFF00);
+      bulletY--;
+    }
+    
+    ledShowSafe();
+    delay(60);
+  }
+  
+  animEnd();
+}
+
+// Herz pulsierend
+void animHeart() {
+  animStart();
+  
+  const uint8_t heart[8] = {
+    0b01101100,
+    0b11111110,
+    0b11111110,
+    0b11111110,
+    0b01111100,
+    0b00111000,
+    0b00010000,
+    0b00000000
+  };
+  
+  for (int pulse = 0; pulse < 8; pulse++) {
+    // Größer werden
+    for (int size = 0; size <= 2; size++) {
+      ledClear();
+      uint8_t br = 150 + size * 50;
+      
+      for (int y = 0; y < 8; y++) {
+        for (int x = 0; x < 8; x++) {
+          if (heart[y] & (1 << (7 - x))) {
+            setPixel(x, y, ledColor(br, 0, br * 0.3f));
+          }
+        }
+      }
+      // Glow-Effekt
+      if (size > 0) {
+        for (int y = 0; y < 8; y++) {
+          for (int x = 0; x < 8; x++) {
+            if (!(heart[y] & (1 << (7 - x)))) {
+              // Nachbar-Check für Glow
+              bool hasNeighbor = false;
+              for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                  int ny = y + dy, nx = x + dx;
+                  if (ny >= 0 && ny < 8 && nx >= 0 && nx < 8) {
+                    if (heart[ny] & (1 << (7 - nx))) hasNeighbor = true;
+                  }
+                }
+              }
+              if (hasNeighbor) {
+                setPixel(x, y, ledColor(50 * size, 0, 15 * size));
+              }
+            }
+          }
+        }
+      }
+      ledShowSafe();
+      delay(60);
+    }
+    
+    // Kleiner werden
+    for (int size = 2; size >= 0; size--) {
+      ledClear();
+      uint8_t br = 150 + size * 50;
+      for (int y = 0; y < 8; y++) {
+        for (int x = 0; x < 8; x++) {
+          if (heart[y] & (1 << (7 - x))) {
+            setPixel(x, y, ledColor(br, 0, br * 0.3f));
+          }
+        }
+      }
+      ledShowSafe();
+      delay(60);
+    }
+  }
+  
+  animEnd();
+}
+
+// DNA-Helix
+void animDNA() {
+  animStart();
+  
+  for (int f = 0; f < 60; f++) {
+    ledClear();
+    
+    for (int y = 0; y < 8; y++) {
+      float phase = (y + f * 0.3f) * 0.8f;
+      int x1 = 3.5f + sin(phase) * 2.5f;
+      int x2 = 3.5f - sin(phase) * 2.5f;
+      
+      // Stränge
+      setPixel(constrain(x1, 0, 7), y, 0x00FFFF);
+      setPixel(constrain(x2, 0, 7), y, 0xFF00FF);
+      
+      // Verbindungen (Basenpaare)
+      if (y % 2 == 0) {
+        int minX = min(x1, x2) + 1;
+        int maxX = max(x1, x2) - 1;
+        for (int x = minX; x <= maxX; x++) {
+          if (x >= 0 && x < 8) {
+            setPixel(x, y, ledColor(100, 255, 100));
+          }
+        }
+      }
+    }
+    
+    ledShowSafe();
+    delay(50);
+  }
+  
+  animEnd();
+}
+
+// Sanduhr
+void animHourglass() {
+  animStart();
+  
+  // Rahmen der Sanduhr
+  const uint8_t frame[8] = {
+    0b11111111,
+    0b01000010,
+    0b00100100,
+    0b00011000,
+    0b00011000,
+    0b00100100,
+    0b01000010,
+    0b11111111
+  };
+  
+  // Sand fällt
+  int sandTop = 1;
+  int sandBottom = 7;
+  
+  for (int f = 0; f < 40; f++) {
+    ledClear();
+    
+    // Rahmen zeichnen
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x < 8; x++) {
+        if (frame[y] & (1 << (7 - x))) {
+          setPixel(x, y, 0x886622);
+        }
+      }
+    }
+    
+    // Sand oben (wird weniger)
+    int topSandLevel = max(1, 4 - f / 6);
+    for (int y = 1; y < topSandLevel; y++) {
+      int width = 3 - y;
+      for (int x = 3 - width; x <= 4 + width; x++) {
+        if (x > 0 && x < 7) {
+          setPixel(x, y, 0xFFDD44);
+        }
+      }
+    }
+    
+    // Fallender Sand in der Mitte
+    if (f % 3 == 0 && f < 36) {
+      setPixel(3, 3, 0xFFDD44);
+      setPixel(4, 4, 0xFFDD44);
+    }
+    
+    // Sand unten (wird mehr)
+    int bottomSandLevel = min(3, f / 6);
+    for (int y = 7; y > 7 - bottomSandLevel; y--) {
+      int dist = 7 - y;
+      int width = dist;
+      for (int x = 3 - width; x <= 4 + width; x++) {
+        if (x > 0 && x < 7) {
+          setPixel(x, y, 0xFFDD44);
+        }
+      }
+    }
+    
+    ledShowSafe();
+    delay(80);
+  }
+  
+  // Fertig - umdrehen Animation
+  for (int rot = 0; rot < 8; rot++) {
+    ledClear();
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x < 8; x++) {
+        if (frame[y] & (1 << (7 - x))) {
+          // Rotation simulieren durch Farbwechsel
+          setPixel(x, y, rainbow(rot * 30));
+        }
+      }
+    }
+    ledShowSafe();
+    delay(80);
+  }
+  
+  animEnd();
+}
+
+// Smiley Emotionen
+void animSmiley() {
+  animStart();
+  
+  // Verschiedene Gesichtsausdrücke
+  // Glücklich
+  ledClear();
+  setPixel(2, 2, 0xFFFF00); setPixel(5, 2, 0xFFFF00);  // Augen
+  setPixel(1, 5, 0xFFFF00); setPixel(2, 6, 0xFFFF00);  // Mund
+  setPixel(3, 6, 0xFFFF00); setPixel(4, 6, 0xFFFF00);
+  setPixel(5, 6, 0xFFFF00); setPixel(6, 5, 0xFFFF00);
+  ledShowSafe();
+  delay(500);
+  
+  // Zwinkern
+  ledClear();
+  setPixel(2, 2, 0xFFFF00);
+  setPixel(4, 2, 0xFFFF00); setPixel(5, 2, 0xFFFF00); setPixel(6, 2, 0xFFFF00);  // Zwinkerndes Auge
+  setPixel(1, 5, 0xFFFF00); setPixel(2, 6, 0xFFFF00);
+  setPixel(3, 6, 0xFFFF00); setPixel(4, 6, 0xFFFF00);
+  setPixel(5, 6, 0xFFFF00); setPixel(6, 5, 0xFFFF00);
+  ledShowSafe();
+  delay(200);
+  
+  // Überrascht
+  ledClear();
+  dot(1, 1, 0xFFFF00); dot(5, 1, 0xFFFF00);  // Große Augen
+  setPixel(3, 5, 0xFFFF00); setPixel(4, 5, 0xFFFF00);  // O-Mund
+  setPixel(3, 6, 0xFFFF00); setPixel(4, 6, 0xFFFF00);
+  setPixel(2, 5, 0xFFFF00); setPixel(5, 5, 0xFFFF00);
+  ledShowSafe();
+  delay(500);
+  
+  // Traurig
+  ledClear();
+  setPixel(2, 2, 0x4444FF); setPixel(5, 2, 0x4444FF);  // Blaue Augen
+  setPixel(2, 4, 0x00AAFF);  // Träne
+  setPixel(1, 6, 0x4444FF); setPixel(2, 5, 0x4444FF);  // Trauriger Mund
+  setPixel(3, 5, 0x4444FF); setPixel(4, 5, 0x4444FF);
+  setPixel(5, 5, 0x4444FF); setPixel(6, 6, 0x4444FF);
+  ledShowSafe();
+  delay(500);
+  
+  // Herzaugen
+  for (int f = 0; f < 10; f++) {
+    ledClear();
+    uint32_t eyeCol = (f % 2 == 0) ? 0xFF0066 : 0xFF3388;
+    // Herz-Augen
+    setPixel(1, 2, eyeCol); setPixel(3, 2, eyeCol);
+    setPixel(2, 3, eyeCol);
+    setPixel(5, 2, eyeCol); setPixel(7, 2, eyeCol);
+    setPixel(6, 3, eyeCol);
+    // Glücklicher Mund
+    setPixel(2, 6, 0xFF6688); setPixel(3, 6, 0xFF6688);
+    setPixel(4, 6, 0xFF6688); setPixel(5, 6, 0xFF6688);
+    ledShowSafe();
+    delay(150);
+  }
+  
+  // Cool (Sonnenbrille)
+  ledClear();
+  for (int x = 1; x < 7; x++) setPixel(x, 2, 0x222222);  // Brillengestell
+  dot(1, 2, 0x222222); dot(4, 2, 0x222222);  // Brillengläser
+  setPixel(2, 6, 0xFFFF00); setPixel(3, 5, 0xFFFF00);  // Grinsen
+  setPixel(4, 5, 0xFFFF00); setPixel(5, 6, 0xFFFF00);
+  ledShowSafe();
+  delay(600);
+  
   animEnd();
 }
 
@@ -1120,7 +2195,7 @@ void animGag() {
 void playAnim(bool silent = false) {
   uint8_t selectedAnim = currentAnimation;
   if (currentAnimation == 11) {
-    selectedAnim = random(11);
+    selectedAnim = random(25);
   }
 
   stats.animationCounts[selectedAnim]++;
@@ -1142,6 +2217,20 @@ void playAnim(bool silent = false) {
     case 8: animFirework(); break;
     case 9: animMatrix(); break;
     case 10: animPulse(); break;
+    case 12: animPingPong(); break;
+    case 13: animSnake(); break;
+    case 14: animNuke(); break;
+    case 15: animFraunhofer(); break;
+    case 16: animRocket(); break;
+    case 17: animPP(); break;
+    case 18: animSkyscraper(); break;
+    case 19: animTetris(); break;
+    case 20: animPacMan(); break;
+    case 21: animInvaders(); break;
+    case 22: animHeart(); break;
+    case 23: animDNA(); break;
+    case 24: animHourglass(); break;
+    case 25: animSmiley(); break;
     default: animBounce();
   }
 }
@@ -1176,7 +2265,7 @@ void bootAnim() {
     delay(22);
   }
 
-  scrollText("MAGIC-FLEX-CUBE v3", 0xFFFFFF, 50);
+  scrollText("MAGIC-FLEX-CUBE v5", 0xFFFFFF, 50);
   
   delay(200);
 
@@ -1395,6 +2484,7 @@ void roll(unsigned long dur) {
   cpuFast();
   
   gagModeActive = false;
+  // displayPhase NICHT zurücksetzen! Das stört die 3er-Rotation
 
   bool pasch = (dur >= SHAKE_PASCH_TIME) && (dur < SHAKE_GAG_TIME);
   bool gag = (dur >= SHAKE_GAG_TIME);
@@ -1421,7 +2511,6 @@ void roll(unsigned long dur) {
   // GAG-MODUS: 9er Pasch
   if (gag) {
     animGag();
-    // Zeige 9er Pasch
     drawNine(DICE1_COLOR);
     currentDisplayDice = 1;
     isDisplayingResult = true;
@@ -1433,7 +2522,7 @@ void roll(unsigned long dur) {
     dbgln("   🌈 9 + 9 = 18 (9er Pasch!)");
     printLine('=');
     dbgln();
-    return;  // Kein normales Würfelergebnis
+    return;
   }
   
   // PASCH-MODUS
@@ -1460,7 +2549,6 @@ void roll(unsigned long dur) {
   stats.sumCounts[dice1Result + dice2Result]++;
 
   currentDisplayDice = random(1, 3);
-  displayPhase = (currentDisplayDice == 1) ? 0 : 1;
   currentBrightness = BRIGHTNESS_NORMAL;
   ledSetBrightness(currentBrightness);
 
@@ -1500,35 +2588,30 @@ void updateDisplay() {
     return;
   }
   
-  // Normale Anzeige
-  bool showBatteryWarning = !isUSBPower() && (batteryVoltage < BATTERY_NOMINAL) && (batteryVoltage >= BATTERY_CRITICAL);
+  // Prüfen ob Batterie-Warnung angezeigt werden soll
+  bool showBatteryWarning = !isUSBPower() && 
+                            (batteryVoltage < BATTERY_NOMINAL) && 
+                            (batteryVoltage >= BATTERY_CRITICAL);
   
   if (showBatteryWarning) {
-    displayPhase = (displayPhase + 1) % 3;
+    // 3-Phasen-Rotation: Würfel1 -> Würfel2 -> Batterie
+    displayPhase++;
+    if (displayPhase > 2) displayPhase = 0;
     
-    switch (displayPhase) {
-      case 0:
-        currentDisplayDice = 1;
-        drawDie(dice1Result, DICE1_COLOR);
-        break;
-      case 1:
-        currentDisplayDice = 2;
-        drawDie(dice2Result, DICE2_COLOR);
-        break;
-      case 2:
-        drawBattLow();
-        dbg("🪫 Batterie: ");
-        dbgf(batteryVoltage, 2);
-        dbgln("V");
-        break;
+    if (displayPhase == 0) {
+      drawDie(dice1Result, DICE1_COLOR);
+    } else if (displayPhase == 1) {
+      drawDie(dice2Result, DICE2_COLOR);
+    } else {
+      drawBattLow();
     }
   } else {
+    // Normale 2-Phasen-Rotation: Würfel1 <-> Würfel2
     currentDisplayDice = (currentDisplayDice == 1) ? 2 : 1;
     drawDie(currentDisplayDice == 1 ? dice1Result : dice2Result,
             currentDisplayDice == 1 ? DICE1_COLOR : DICE2_COLOR);
   }
 }
-
 // ============================================
 // CLI
 // ============================================
@@ -1850,6 +2933,9 @@ void setup() {
   FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);
   ledSetBrightness(BRIGHTNESS_NORMAL);
 
+
+  imuOK = initIMU();
+
   handleWakeup();
 
   batteryVoltage = readBatt();
@@ -1878,7 +2964,6 @@ void setup() {
     }
   }
 
-  imuOK = initIMU();
 
   randomSeed(analogRead(0) ^ micros() ^ esp_random());
   pinMode(BUTTON_PIN, INPUT_PULLUP);
