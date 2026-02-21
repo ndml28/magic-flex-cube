@@ -9,6 +9,7 @@
 // CONFIGURATION
 // ============================================
 #define MOTD "Magic-Flex-Cube v7"
+//#define DEBUG_SLEEP //activate for waiting for serial at startup/wakeup
 #define BATTERY_PIN 5
 #define BATTERY_READ_INTERVAL 15000
 #define POLL_INTERVAL_ACTIVE 12
@@ -34,7 +35,7 @@
 #define BRIGHTNESS_SHAKE 20
 
 #define DEEP_SLEEP_BATTERY 60
-#define DEEP_SLEEP_IDLE 2 // TODO
+#define DEEP_SLEEP_IDLE 20
 #define uS_TO_S_FACTOR 1000000ULL
 
 #define LED_PIN 14
@@ -45,7 +46,7 @@
 // ============================================
 // SHAKE DETECTION
 // ============================================
-#define SHAKE_THRESHOLD 9500.0f
+#define SHAKE_THRESHOLD 2500.0f
 #define SHAKE_MIN_DURATION 450
 #define SHAKE_END_DELAY 500
 #define SHAKE_PASCH_TIME 3000
@@ -850,15 +851,16 @@ void updateBatt() {
 // IMU
 // ============================================
 
-// IMU: Min 3, Max 10 Versuche, Pluasibilitätscheck
+// IMU: Plausibilitätscheck
 bool readIMUSafe(float &aX = lastAccelX, float &aY = lastAccelY, float &aZ = lastAccelZ) {
   float sumAX = 0, sumAY = 0, sumAZ = 0;
-  int valid = 0;
-  
+  int valid = 0;  
 
   for (int i = 0; i < 10 && valid < IMU_SAMPLES; i++) {
     float x = 0, y = 0,z = 0;
-    if (imu.isDataReady() && imu.readAccel(x,y,z)) {
+    QMI8658_Data d;
+    if (imu.isDataReady() && imu.readSensorData(d)) {
+      x = d.accelX; y = d.accelY; z = d.accelZ;
       if (fabs(x) < 4000 && fabs(y) < 4000 && fabs(z) < 4000 && (fabs(x) + fabs(y) + fabs(z)) > 100) {
         sumAX += x; sumAY += y; sumAZ += z;
         valid++;
@@ -881,11 +883,15 @@ bool initIMU() {
     dbgln("FEHLER!");
     return false;
   }
-  imu.reset();
+  Wire.setClock(100000);
+
+  //imu.reset(); // not needed?
   imu.setAccelRange(QMI8658_ACCEL_RANGE_4G);
-  imu.setAccelODR(QMI8658_ACCEL_ODR_500HZ);
+  imu.setAccelODR(QMI8658_ACCEL_ODR_125HZ); // LOW Power does not work good for wakup from deep sleep somehow. Difference ist not that but in consuption
   imu.setAccelUnit_mg(true);
   imu.enableAccel();
+  
+  delay(10);
 
   if (readIMUSafe()) {
     dbgln("OK");
@@ -1076,9 +1082,12 @@ uint8_t handleWakeup() {
     dbgln("   Prüfe Orientierungsänderung...");
     
     if (checkOrientationChanged()) {
-      dbgln("   ✅ Bewegung erkannt - Aufwachen!");
-      sleepReason = 0;
-      return 1;
+      delay(150); // double check
+      if (checkOrientationChanged()) {
+        dbgln("   ✅ Bewegung erkannt - Aufwachen!");
+        sleepReason = 0;
+        return 1;
+      }
     }
     
     dbgln("   ❌ Keine Änderung - weiter schlafen");
@@ -3204,6 +3213,14 @@ void showSensor() {
       float dz = abs(aZ - lastAccelZ);
       float delta = dx + dy + dz;
 
+      dbg(" X=");
+      dbgf(aX, 0);
+      dbg(" Y=");
+      dbgf(aY, 0);
+      dbg(" Z=");
+      dbgf(aZ, 0);
+      dbgln();
+
       dbg("  dA=");
       dbgf(delta, 0);
 
@@ -3401,12 +3418,13 @@ void cmd(char c) {
 // SETUP
 // ============================================
 void setup() {
-  cpuFast();
+  cpuSlow();
   
-
   Serial.begin(115200);
 
-  Wire.setClock(100000);
+  #ifdef DEBUG_SLEEP
+  delay(1000); // only for serial debug
+  #endif
 
   disableRadios();
 
@@ -3416,7 +3434,6 @@ void setup() {
   FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);
   ledSetBrightness(BRIGHTNESS_NORMAL);
 
-  cpuFast();
   if(handleWakeup() == 0 ){
     imuOK = initIMU();
   }
