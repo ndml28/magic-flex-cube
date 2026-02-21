@@ -8,6 +8,7 @@
 // ============================================
 // CONFIGURATION
 // ============================================
+#define MOTD "Magic-Flex-Cube v6"
 #define BATTERY_PIN 5
 #define BATTERY_READ_INTERVAL 15000
 #define POLL_INTERVAL_ACTIVE 12
@@ -18,7 +19,7 @@
 #define BATTERY_FULL 4.2f
 #define BATTERY_NOMINAL 3.7f
 #define BATTERY_LOW 3.4f
-#define BATTERY_CRITICAL 3.2f
+#define BATTERY_CRITICAL 3.3f
 #define BATTERY_NOT_PRESENT 1.0f
 
 #define ADC_RESOLUTION 4095.0f
@@ -26,13 +27,13 @@
 #define VOLTAGE_DIVIDER_RATIO 2.0f
 
 #define BRIGHTNESS_LOW_POWER 1
-#define BRIGHTNESS_NORMAL 3
+#define BRIGHTNESS_NORMAL 4
 #define BRIGHTNESS_DIM 1
 #define BRIGHTNESS_ANIMATION 20
 #define BRIGHTNESS_BOOTUP 40
 #define BRIGHTNESS_SHAKE 20
 
-#define DEEP_SLEEP_BATTERY 30
+#define DEEP_SLEEP_BATTERY 60
 #define DEEP_SLEEP_IDLE 20
 #define uS_TO_S_FACTOR 1000000ULL
 
@@ -45,13 +46,13 @@
 // ============================================
 // SHAKE DETECTION
 // ============================================
-#define SHAKE_THRESHOLD 4500.0f
-#define SHAKE_GYRO_THRESHOLD 250.0f
+#define SHAKE_THRESHOLD 3500.0f
+#define SHAKE_GYRO_THRESHOLD 3000.0f
 #define SHAKE_MIN_DURATION 350
 #define SHAKE_END_DELAY 500
 #define SHAKE_PASCH_TIME 2000
 #define SHAKE_GAG_TIME 10000
-#define SHAKE_COOLDOWN 800
+#define SHAKE_COOLDOWN 3000
 #define ORIENTATION_THRESHOLD 400.0f
 
 #define DEFAULT_DISPLAY_INTERVAL 1000
@@ -92,10 +93,10 @@ const char* animationNames[] = {
   "Bounce", "Spiral", "Scatter", "Spin", "Plasma",
   "Explode", "Glitch", "Wave", "Firework", "Matrix", 
   "Pulse", "Random",
-  // Neue:
   "PingPong", "Snake", "Nuke", "Fraunhofer", "Rocket",
   "PP", "Skyscraper", "Tetris", "PacMan", "Invaders",
-  "Heart", "DNA", "Hourglass", "Smiley"
+  "Heart", "DNA", "Hourglass", "Smiley",
+  "Windows", "Car", "Nikolaus"
 };
 
 enum ShakeState { SHAKE_IDLE, SHAKE_DETECTING, SHAKE_ACTIVE, SHAKE_ROLLING };
@@ -109,6 +110,9 @@ float lastDelta = 0, lastGyro = 0;
 bool isDimmed = false;
 uint8_t currentBrightness = BRIGHTNESS_NORMAL;
 bool waitingForAnimNumber = false;
+bool waitingForSecondDigit = false;
+uint8_t firstAnimDigit = 0;
+unsigned long animInputTime = 0;
 bool imuOK = false;
 uint8_t imuErrorCount = 0;
 bool gagModeActive = false;
@@ -438,8 +442,8 @@ void drawBatt(uint8_t lvl, uint32_t ol, uint32_t fl) {
 
 void drawBattLow() {
   ledClear();
-  uint32_t orange = 0x446600;
-  uint32_t darkOrange = 0x182200;
+  uint32_t orange = 0xFFFF00;
+  uint32_t darkOrange = 0x804000;
   
   for (int x = 0; x < 6; x++) {
     setPixel(x, 1, orange);
@@ -512,6 +516,285 @@ void registerActivity() {
       }
     }
   }
+}
+
+// Haus vom Nikolaus - Zeichenanimation
+void animNikolaus() {
+  animStart();
+  
+  ledClear();
+  
+  // Haupt-Eckpunkte (auf 8x8 skaliert)
+  // A = unten links, B = unten rechts, C = oben rechts, D = oben links, E = Dachspitze
+  //
+  //        E (3,0)
+  //       /\
+  //      /  \
+  //   D +----+ C
+  //     |\  /|
+  //     | \/ |
+  //     | /\ |
+  //     |/  \|
+  //   A +----+ B
+  
+  const int8_t Ax = 1, Ay = 7;  // Unten links
+  const int8_t Bx = 6, By = 7;  // Unten rechts
+  const int8_t Cx = 6, Cy = 3;  // Oben rechts
+  const int8_t Dx = 1, Dy = 3;  // Oben links
+  const int8_t Ex = 3, Ey = 0;  // Dachspitze
+  
+  // Reihenfolge: A -> B -> C -> D -> A -> E -> B -> D -> C
+  // "Das ist das Haus vom Ni-ko-laus"
+  const int8_t orderX[] = {Ax, Bx, Cx, Dx, Ax, Ex, Bx, Dx, Cx};
+  const int8_t orderY[] = {Ay, By, Cy, Dy, Ay, Ey, By, Dy, Cy};
+  
+  // Farben für jede Linie
+  const uint32_t lineColors[] = {
+    0xFF0000,  // Rot
+    0xFF8800,  // Orange
+    0xFFFF00,  // Gelb
+    0x00FF00,  // Grün
+    0x00FFFF,  // Cyan
+    0x0088FF,  // Hellblau
+    0x0000FF,  // Blau
+    0x8800FF   // Violett
+  };
+  
+  // Bresenham Linien-Algorithmus für jede Linie
+  for (int line = 0; line < 8; line++) {
+    int x0 = orderX[line];
+    int y0 = orderY[line];
+    int x1 = orderX[line + 1];
+    int y1 = orderY[line + 1];
+    
+    uint32_t color = lineColors[line];
+    
+    int dx = abs(x1 - x0);
+    int dy = abs(y1 - y0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+    
+    int x = x0, y = y0;
+    
+    while (true) {
+      // Pixel setzen
+      setPixel(x, y, color);
+      
+      // Leuchtender Cursor-Effekt
+      setPixel(x, y, 0xFFFFFF);
+      ledShowSafe();
+      delay(40);
+      setPixel(x, y, color);  // Zurück zur Linienfarbe
+      ledShowSafe();
+      
+      if (x == x1 && y == y1) break;
+      
+      int e2 = 2 * err;
+      if (e2 > -dy) { err -= dy; x += sx; }
+      if (e2 < dx) { err += dx; y += sy; }
+    }
+    
+    delay(80);  // Kurze Pause zwischen Linien
+  }
+  
+  delay(300);
+  
+  // Fertiges Haus blinken/leuchten lassen
+  for (int f = 0; f < 8; f++) {
+    // Rainbow-Effekt über alle Pixel
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x < 8; x++) {
+        if (leds[y * 8 + x].r > 0 || leds[y * 8 + x].g > 0 || leds[y * 8 + x].b > 0) {
+          setPixel(x, y, rainbow((x * 20 + y * 20 + f * 30) % 256));
+        }
+      }
+    }
+    ledShowSafe();
+    delay(100);
+  }
+  
+  // Finales Blinken
+  for (int f = 0; f < 3; f++) {
+    ledSetBrightness(BRIGHTNESS_ANIMATION * 2);
+    ledShowSafe();
+    delay(50);
+    ledSetBrightness(BRIGHTNESS_ANIMATION);
+    ledShowSafe();
+    delay(50);
+  }
+  
+  animEnd();
+}
+
+// Fahrendes Auto
+void animCar() {
+  animStart();
+  
+  for (int frame = 0; frame < 60; frame++) {
+    int carX = -5 + frame / 2;  // Auto Position
+    
+    ledClear();
+    
+    // Himmel/Hintergrund
+    for (int y = 0; y < 5; y++) {
+      for (int x = 0; x < 8; x++) {
+        setPixel(x, y, ledColor(0, 0, 20 + y * 5));  // Gradient
+      }
+    }
+    
+    // Straße
+    for (int x = 0; x < 8; x++) {
+      setPixel(x, 6, 0x333333);
+      setPixel(x, 7, 0x444444);
+    }
+    
+    // Straßenmarkierung (bewegend)
+    for (int x = 0; x < 8; x += 3) {
+      int markX = (x - (frame / 3) % 3 + 8) % 8;
+      setPixel(markX, 6, 0xFFFF00);
+    }
+    
+    // --- AUTO ---
+    // Karosserie (rot)
+    for (int dx = 0; dx < 5; dx++) {
+      int px = carX + dx;
+      if (px >= 0 && px < 8) {
+        setPixel(px, 4, 0xCC0000);  // Dach
+        setPixel(px, 5, 0xFF0000);  // Körper
+      }
+    }
+    
+    // Fenster (hellblau)
+    for (int dx = 1; dx < 3; dx++) {
+      int px = carX + dx;
+      if (px >= 0 && px < 8) {
+        setPixel(px, 4, 0x66CCFF);
+      }
+    }
+    
+    // Motorhaube vorne
+    int hoodX = carX + 3;
+    if (hoodX >= 0 && hoodX < 8) setPixel(hoodX, 4, 0xAA0000);
+    hoodX = carX + 4;
+    if (hoodX >= 0 && hoodX < 8) setPixel(hoodX, 4, 0x880000);
+    
+    // Räder (animiert - drehen)
+    int wheelFrame = frame % 4;
+    uint32_t wheelColor1 = (wheelFrame < 2) ? 0x222222 : 0x111111;
+    uint32_t wheelColor2 = (wheelFrame < 2) ? 0x111111 : 0x222222;
+    
+    // Hinterrad
+    int wheelX = carX + 1;
+    if (wheelX >= 0 && wheelX < 8) {
+      setPixel(wheelX, 6, wheelColor1);
+    }
+    
+    // Vorderrad
+    wheelX = carX + 4;
+    if (wheelX >= 0 && wheelX < 8) {
+      setPixel(wheelX, 6, wheelColor2);
+    }
+    
+    // Scheinwerfer (gelb, blinkend)
+    int lightX = carX + 5;
+    if (lightX >= 0 && lightX < 8) {
+      setPixel(lightX, 5, (frame % 6 < 3) ? 0xFFFF00 : 0xAAAA00);
+    }
+    
+    // Rücklichter (rot)
+    lightX = carX - 1;
+    if (lightX >= 0 && lightX < 8) {
+      setPixel(lightX, 5, 0xFF0000);
+    }
+    
+    // Abgase / Rauch (hinten)
+    if (frame % 3 == 0) {
+      int smokeX = carX - 2 - random(2);
+      int smokeY = 5 - random(2);
+      if (smokeX >= 0 && smokeX < 8 && smokeY >= 0) {
+        setPixel(smokeX, smokeY, ledColor(60, 60, 60));
+      }
+    }
+    
+    ledShowSafe();
+    delay(60);
+  }
+  
+  animEnd();
+}
+
+// Windows 10 Ladeanimation - kreisende Punkte
+void animWindows() {
+  animStart();
+  
+  // Windows 10 style - 5 Punkte die im Kreis rotieren mit variabler Geschwindigkeit
+  const int numDots = 5;
+  float dotPositions[numDots];
+  
+  // Gestaffelter Start
+  for (int i = 0; i < numDots; i++) {
+    dotPositions[i] = -i * 0.6f;
+  }
+  
+  // Windows Blau
+  uint32_t winBlue = 0x0078D4;
+  
+  for (int f = 0; f < 100; f++) {
+    ledClear();
+    
+    // Optional: Dunkler Hintergrund
+    // ledFill(0x001020);
+    
+    for (int i = 0; i < numDots; i++) {
+      // Windows-typische Beschleunigung: schnell oben, langsam unten
+      float pos = dotPositions[i];
+      float normalizedPos = fmod(pos + 10 * PI, 2 * PI);  // 0 bis 2*PI
+      
+      // Geschwindigkeitsmodifikation: schneller bei 0 und PI, langsamer bei PI/2 und 3PI/2
+      float speedMod = 1.0f + 0.8f * cos(normalizedPos * 2);
+      
+      dotPositions[i] += 0.08f * speedMod;
+      
+      // Position berechnen
+      float x = 3.5f + cos(dotPositions[i]) * 2.8f;
+      float y = 3.5f + sin(dotPositions[i]) * 2.8f;
+      
+      // Helligkeit basierend auf Position im Kreis (vorne heller)
+      float brightness = 0.5f + 0.5f * (1.0f - (float)i / numDots);
+      
+      int px = constrain((int)round(x), 0, 7);
+      int py = constrain((int)round(y), 0, 7);
+      
+      // Windows Blau mit Helligkeit
+      setPixel(px, py, ledColor(0, 
+                                (uint8_t)(120 * brightness), 
+                                (uint8_t)(212 * brightness)));
+      
+      // Tail-Effekt: vorherige Position leicht
+      float prevX = 3.5f + cos(dotPositions[i] - 0.3f) * 2.8f;
+      float prevY = 3.5f + sin(dotPositions[i] - 0.3f) * 2.8f;
+      int ppx = constrain((int)round(prevX), 0, 7);
+      int ppy = constrain((int)round(prevY), 0, 7);
+      if (ppx != px || ppy != py) {
+        setPixel(ppx, ppy, ledColor(0, 
+                                    (uint8_t)(40 * brightness), 
+                                    (uint8_t)(70 * brightness)));
+      }
+    }
+    
+    ledShowSafe();
+    delay(30);
+  }
+  
+  // "Fertig" - kurzer Flash
+  ledFill(winBlue);
+  ledShowSafe();
+  delay(100);
+  ledClear();
+  ledShowSafe();
+  
+  animEnd();
 }
 
 // ============================================
@@ -1035,11 +1318,9 @@ void animSnake() {
   animEnd();
 }
 
-// Atombombe - Explosion mit Pilzwolke
 void animNuke() {
   animStart();
   
-  // Bombe fällt
   for (int y = 0; y < 6; y++) {
     ledClear();
     setPixel(3, y, 0x888888);
@@ -1116,65 +1397,100 @@ void animNuke() {
   
   animEnd();
 }
-
-// Fraunhofer Logo (stilisiertes "e" mit Bogen)
+// Fraunhofer Logo - Vertikale gebogene weiße Streifen auf Grün
+// Fraunhofer Logo - Weiße geschwungene Linien von links unten nach rechts oben
 void animFraunhofer() {
   animStart();
   
-  // Das Fraunhofer "e" - vereinfacht auf 8x8
-  const uint8_t logo[8] = {
-    0b00111100,  // Oberer Bogen
-    0b01111110,
-    0b01100000,  // Querbalken
-    0b01111110,
-    0b01111110,
-    0b01100000,
-    0b01111110,
-    0b00111100   // Unterer Bogen
-  };
+  uint32_t fhGreen = 0x179C7D;
+  uint32_t white = 0xFFFFFF;
   
-  // Aufbau von links nach rechts
-  for (int col = 0; col < 8; col++) {
-    for (int y = 0; y < 8; y++) {
-      for (int x = 0; x <= col; x++) {
-        if (logo[y] & (1 << (7 - x))) {
-          setPixel(x, y, 0x179C7D);  // Fraunhofer Grün
-        }
-      }
-    }
+  // Grüner Hintergrund fade-in
+  for (int b = 0; b <= 10; b++) {
+    uint8_t r = (0x17 * b) / 10;
+    uint8_t g = (0x9C * b) / 10;
+    uint8_t bl = (0x7D * b) / 10;
+    ledFill(ledColor(r, g, bl));
     ledShowSafe();
-    delay(80);
+    delay(30);
   }
   
-  delay(300);
+  delay(100);
   
-  // Pulsieren
-  for (int p = 0; p < 6; p++) {
-    uint8_t br = (p % 2 == 0) ? 255 : 150;
-    ledClear();
-    for (int y = 0; y < 8; y++) {
-      for (int x = 0; x < 8; x++) {
-        if (logo[y] & (1 << (7 - x))) {
-          setPixel(x, y, ledColor(0, br * 0.6f, br * 0.5f));
-        }
-      }
+  // Die 4 charakteristischen Kurven des Fraunhofer-Logos
+  // Definiert als Pixel-Koordinaten für jede Linie
+  // Alle Linien starten links unten und fächern nach rechts oben auf
+  
+  // Linie 1 (unterste) - startet ganz unten links
+  const int8_t line1X[] = {0, 0, 1, 1, 2, 2, 3, 3};
+  const int8_t line1Y[] = {7, 6, 5, 4, 4, 3, 3, 2};
+  const int line1Len = 8;
+  
+  // Linie 2
+  const int8_t line2X[] = {0, 1, 1, 2, 2, 3, 4, 4, 5};
+  const int8_t line2Y[] = {5, 4, 3, 3, 2, 2, 1, 0, 0};
+  const int line2Len = 9;
+  
+  // Linie 3
+  const int8_t line3X[] = {0, 1, 2, 2, 3, 3, 4, 5, 5, 6, 7};
+  const int8_t line3Y[] = {4, 3, 2, 2, 2, 1, 1, 1, 0, 0, 0};
+  const int line3Len = 11;
+  
+  // Linie 4 (oberste) - endet ganz rechts
+  const int8_t line4X[] = {0, 1, 2, 3, 4, 5, 6, 7, 7};
+  const int8_t line4Y[] = {3, 2, 2, 1, 1, 1, 1, 1, 2};
+  const int line4Len = 9;
+  
+  // Linie 5 (zusätzliche oberste)
+  const int8_t line5X[] = {1, 2, 3, 4, 5, 6, 7};
+  const int8_t line5Y[] = {1, 1, 0, 0, 0, 0, 0};
+  const int line5Len = 7;
+  
+  // Alle Linien und deren Längen in Arrays
+  const int8_t* linesX[] = {line1X, line2X, line3X, line4X, line5X};
+  const int8_t* linesY[] = {line1Y, line2Y, line3Y, line4Y, line5Y};
+  const int lineLens[] = {line1Len, line2Len, line3Len, line4Len, line5Len};
+  
+  // Linien nacheinander zeichnen (animiert)
+  for (int l = 0; l < 5; l++) {
+    for (int p = 0; p < lineLens[l]; p++) {
+      setPixel(linesX[l][p], linesY[l][p], white);
+      ledShowSafe();
+      delay(25);
     }
-    ledShowSafe();
-    delay(150);
+    delay(50);
   }
   
-  // Regenbogen-Sweep
-  for (int f = 0; f < 30; f++) {
-    for (int y = 0; y < 8; y++) {
-      for (int x = 0; x < 8; x++) {
-        if (logo[y] & (1 << (7 - x))) {
-          setPixel(x, y, rainbow((x * 20 + y * 10 + f * 8) % 256));
-        }
+  delay(400);
+  
+  // Animation: Linien "fließen" - Wellen-Effekt
+  for (int frame = 0; frame < 40; frame++) {
+    // Grüner Hintergrund
+    ledFill(fhGreen);
+    
+    // Linien mit Helligkeits-Welle
+    for (int l = 0; l < 5; l++) {
+      for (int p = 0; p < lineLens[l]; p++) {
+        // Helligkeit variiert wellenförmig
+        float wave = sin((p * 0.5f) + (frame * 0.3f) - (l * 0.5f));
+        uint8_t brightness = 180 + (uint8_t)(wave * 75);
+        setPixel(linesX[l][p], linesY[l][p], ledColor(brightness, brightness, brightness));
       }
     }
+    
     ledShowSafe();
     delay(40);
   }
+  
+  // Finales statisches Logo
+  ledFill(fhGreen);
+  for (int l = 0; l < 5; l++) {
+    for (int p = 0; p < lineLens[l]; p++) {
+      setPixel(linesX[l][p], linesY[l][p], white);
+    }
+  }
+  ledShowSafe();
+  delay(500);
   
   animEnd();
 }
@@ -1260,7 +1576,6 @@ void animRocket() {
   animEnd();
 }
 
-// Männliches Glied (diskret aber erkennbar)
 void animPP() {
   animStart();
   
@@ -2231,6 +2546,9 @@ void playAnim(bool silent = false) {
     case 23: animDNA(); break;
     case 24: animHourglass(); break;
     case 25: animSmiley(); break;
+    case 26: animWindows(); break;
+    case 27: animCar(); break;
+    case 28: animNikolaus(); break;
     default: animBounce();
   }
 }
@@ -2242,6 +2560,7 @@ void bootAnim() {
   cpuFast();
   ledSetBrightness(BRIGHTNESS_BOOTUP);
 
+  // Matrix-Regen (bestehend)
   uint8_t drops[8] = { 0 };
   for (int f = 0; f < 40; f++) {
     ledClear();
@@ -2257,6 +2576,7 @@ void bootAnim() {
     delay(30);
   }
 
+  // Regenbogen-Welle (bestehend)
   for (int w = 0; w < 40; w++) {
     for (int y = 0; y < 8; y++)
       for (int x = 0; x < 8; x++)
@@ -2265,24 +2585,92 @@ void bootAnim() {
     delay(22);
   }
 
-  scrollText("MAGIC-FLEX-CUBE v5", 0xFFFFFF, 50);
-  
-  delay(200);
+  // === NEU: Spiral einwärts ===
+  for (int r = 4; r >= 0; r--) {
+    for (int i = 0; i < (8 - r * 2); i++) {
+      // Oben
+      setPixel(r + i, r, rainbow((i * 30) % 256));
+      ledShowSafe(); delay(15);
+    }
+    for (int i = 0; i < (7 - r * 2); i++) {
+      // Rechts
+      setPixel(7 - r, r + 1 + i, rainbow((i * 30 + 60) % 256));
+      ledShowSafe(); delay(15);
+    }
+    for (int i = 0; i < (7 - r * 2); i++) {
+      // Unten
+      setPixel(6 - r - i, 7 - r, rainbow((i * 30 + 120) % 256));
+      ledShowSafe(); delay(15);
+    }
+    for (int i = 0; i < (6 - r * 2); i++) {
+      // Links
+      setPixel(r, 6 - r - i, rainbow((i * 30 + 180) % 256));
+      ledShowSafe(); delay(15);
+    }
+  }
 
+  // === NEU: Explosions-Burst ===
+  for (int burst = 0; burst < 3; burst++) {
+    ledFill(0xFFFFFF);
+    ledSetBrightness(BRIGHTNESS_BOOTUP * 2);  // DOPPELT SO HELL
+    ledShowSafe();
+    delay(30);
+    ledClear();
+    ledSetBrightness(BRIGHTNESS_BOOTUP);
+    ledShowSafe();
+    delay(30);
+  }
+
+  // === NEU: Würfel-Symbole morphen ===
+  for (int morph = 0; morph < 12; morph++) {
+    ledClear();
+    uint8_t dieValue = (morph % 6) + 1;
+    drawDieRaw(dieValue, rainbow(morph * 20));
+    ledShowSafe();
+    delay(100);
+  }
+
+  // Lauftext - WENIGER HELL (von 0xFFFFFF auf 0x444444)
+  ledSetBrightness(BRIGHTNESS_BOOTUP / 3);  // Text dimmer
+  scrollText(MOTD, 0x666666, 45);  // Dunklere Farbe
+  ledSetBrightness(BRIGHTNESS_BOOTUP);
+  
+  delay(100);
+
+  // === NEU: Plasma-Übergang ===
+  for (int t = 0; t < 25; t++) {
+    for (int y = 0; y < 8; y++)
+      for (int x = 0; x < 8; x++) {
+        float v = sin(x * 0.5f + t * 0.15f) + sin(y * 0.5f + t * 0.15f);
+        setPixel(x, y, hsv((uint8_t)((v + 2) * 50) % 256, 255, 200));
+      }
+    ledShowSafe();
+    delay(30);
+  }
+
+  // Würfel 1-6 durchlaufen 
   static const uint32_t cols[] = { 0xFF0000, 0xFF8000, 0xFFFF00, 0x00FF00, 0x0000FF, 0x8000FF };
   for (int d = 1; d <= 6; d++) {
     drawDie(d, cols[d - 1]);
-    delay(150);
+    delay(200);
   }
 
-  for (int f = 0; f < 3; f++) {
+  // === VERSTÄRKTE FLASHES - DOPPELT SO HELL ===
+  ledSetBrightness(BRIGHTNESS_BOOTUP * 2);  // Doppelte Helligkeit
+  for (int f = 0; f < 5; f++) {
     ledFill(0xFFFFFF);
     ledShowSafe();
-    delay(60);
+    delay(30);  // Kürzer = intensiver
     ledClear();
     ledShowSafe();
-    delay(60);
+    delay(30);
   }
+  
+  // Finaler Super-Flash
+  ledSetBrightness(min(255, BRIGHTNESS_BOOTUP * 3));
+  ledFill(0xFFFFFF);
+  ledShowSafe();
+  delay(50);
 
   ledSetBrightness(BRIGHTNESS_NORMAL);
   ledClear();
@@ -2590,7 +2978,7 @@ void updateDisplay() {
   
   // Prüfen ob Batterie-Warnung angezeigt werden soll
   bool showBatteryWarning = !isUSBPower() && 
-                            (batteryVoltage < BATTERY_NOMINAL) && 
+                            (batteryVoltage < BATTERY_LOW) && 
                             (batteryVoltage >= BATTERY_CRITICAL);
   
   if (showBatteryWarning) {
@@ -2617,29 +3005,43 @@ void updateDisplay() {
 // ============================================
 void showHelp() {
   printLine('=');
-  printCentered("🎲 MAGIC-FLEX-CUBE v3 - HILFE 🎲");
+  printCentered(MOTD);
+  printCentered("🎲 HILFE 🎲");
   printLine('=');
   dbgln();
   dbgln("  STEUERUNG:");
   dbgln("  ────────────────────────────────────────────");
-  dbgln("  r        Würfeln");
-  dbgln("  a        Animation wählen (0-11)");
-  dbgln("  p        Animation Preview");
-  dbgln("  b        Boot-Animation");
-  dbgln("  g        Gag-Animation (9er Pasch)");
-  dbgln("  1-6      Würfel 1 setzen");
-  dbgln("  9        9er Pasch anzeigen");
-  dbgln("  + / -    Anzeigeintervall");
-  dbgln("  c        Display löschen");
+  dbgln("  r          Würfeln");
+  dbgln("  a + 0-28   Animation wählen (z.B. a15)");
+  dbgln("  p          Animation Preview");
+  dbgln("  b          Boot-Animation");
+  dbgln("  g          Gag-Animation (9er Pasch)");
+  dbgln("  1-6        Würfel 1 setzen");
+  dbgln("  9          9er Pasch anzeigen");
+  dbgln("  + / -      Anzeigeintervall");
+  dbgln("  c          Display löschen");
   dbgln();
   dbgln("  INFO:");
   dbgln("  ────────────────────────────────────────────");
-  dbgln("  h / ?    Hilfe");
-  dbgln("  i        System-Info");
-  dbgln("  v        Batterie-Status");
-  dbgln("  s        Sensor-Daten (5s)");
-  dbgln("  t        Statistiken");
-  dbgln("  x        Statistiken Reset");
+  dbgln("  h / ?      Hilfe");
+  dbgln("  i          System-Info");
+  dbgln("  v          Batterie-Status");
+  dbgln("  s          Sensor-Daten (5s)");
+  dbgln("  t          Statistiken");
+  dbgln("  x          Statistiken Reset");
+  dbgln();
+  dbgln("  ANIMATIONEN (a + Nummer):");
+  dbgln("  ────────────────────────────────────────────");
+  dbgln("   0 Bounce      10 Pulse       20 PacMan");
+  dbgln("   1 Spiral      11 Random      21 Invaders");
+  dbgln("   2 Scatter     12 PingPong    22 Heart");
+  dbgln("   3 Spin        13 Snake       23 DNA");
+  dbgln("   4 Plasma      14 Nuke        24 Hourglass");
+  dbgln("   5 Explode     15 Fraunhofer  25 Smiley");
+  dbgln("   6 Glitch      16 Rocket      26 Windows");
+  dbgln("   7 Wave        17 PP          27 Car");
+  dbgln("   8 Firework    18 Skyscraper  28 Nikolaus");
+  dbgln("   9 Matrix      19 Tetris");
   dbgln();
   dbgln("  SHAKE-MODI:");
   dbgln("  ────────────────────────────────────────────");
@@ -2818,49 +3220,116 @@ void showSensor() {
 void cmd(char c) {
   registerActivity();
 
-  if (waitingForAnimNumber) {
+  // Warten auf zweite Ziffer einer zweistelligen Zahl
+  if (waitingForSecondDigit) {
+    waitingForSecondDigit = false;
     waitingForAnimNumber = false;
+    
     if (c >= '0' && c <= '9') {
-      currentAnimation = c - '0';
-    } else if (c == 'a' || c == 'A') {
-      currentAnimation = 10;
-    } else if (c == 'b' || c == 'B') {
-      currentAnimation = 11;
+      // Zweistellige Zahl: erste*10 + zweite
+      currentAnimation = firstAnimDigit * 10 + (c - '0');
     } else {
-      dbgln("❌ Ungültig!");
+      // Keine zweite Ziffer -> einstellig verwenden
+      currentAnimation = firstAnimDigit;
+      // Das aktuelle Zeichen muss auch verarbeitet werden!
+      if (c != '\n' && c != '\r' && c != ' ') {
+        cmd(c);  // Rekursiv verarbeiten
+        return;
+      }
+    }
+    
+    // Animation validieren
+    if (currentAnimation > 28) {
+      dbg("❌ Animation ");
+      dbg(currentAnimation);
+      dbgln(" existiert nicht! (max 28)");
+      currentAnimation = 11;  // Fallback zu Random
       return;
     }
-    dbg("✅ Animation: ");
+    
+    dbg("✅ Animation ");
+    dbg(currentAnimation);
+    dbg(": ");
     dbgln(animationNames[currentAnimation]);
     return;
   }
 
+  // Warten auf erste Ziffer
+  if (waitingForAnimNumber) {
+    if (c >= '0' && c <= '9') {
+      firstAnimDigit = c - '0';
+      waitingForSecondDigit = true;
+      animInputTime = millis();
+      // Kurz auf zweite Ziffer warten
+      delay(100);  // 100ms warten
+      if (Serial.available()) {
+        char next = Serial.peek();
+        if (next >= '0' && next <= '9') {
+          // Zweite Ziffer vorhanden, wird im nächsten Loop gelesen
+          return;
+        }
+      }
+      // Keine zweite Ziffer -> einstellig
+      waitingForSecondDigit = false;
+      waitingForAnimNumber = false;
+      currentAnimation = firstAnimDigit;
+      
+      dbg("✅ Animation ");
+      dbg(currentAnimation);
+      dbg(": ");
+      dbgln(animationNames[currentAnimation]);
+    } else {
+      dbgln("❌ Ungültig! Bitte Zahl 0-28 eingeben");
+      waitingForAnimNumber = false;
+    }
+    return;
+  }
+
+  // Normale Kommando-Verarbeitung
   switch (c) {
     case 'r':
     case 'R': roll(0); break;
+    
     case 'a':
     case 'A':
-      dbgln("📝 Animation (0-9, a=Pulse, b=Random):");
+      dbgln("📝 Animation wählen (0-28):");
+      dbgln("   0=Bounce,   1=Spiral,    2=Scatter");
+      dbgln("   3=Spin,     4=Plasma,    5=Explode");
+      dbgln("   6=Glitch,   7=Wave,      8=Firework");
+      dbgln("   9=Matrix,  10=Pulse,    11=Random");
+      dbgln("  12=PingPong,13=Snake,    14=Nuke");
+      dbgln("  15=Fraunhofer,16=Rocket, 17=PP");
+      dbgln("  18=Skyscraper,19=Tetris, 20=PacMan");
+      dbgln("  21=Invaders,22=Heart,    23=DNA");
+      dbgln("  24=Hourglass,25=Smiley,  26=Windows");
+      dbgln("  27=Car,     28=Nikolaus");
+      dbg("Aktuelle Animation: ");
+      dbgln(currentAnimation);
       waitingForAnimNumber = true;
       break;
+      
     case 'p':
     case 'P':
-      dbgln("▶️ Preview...");
+      dbg("▶️ Preview Animation ");
+      dbgln(currentAnimation);
       playAnim(false);
       ledClear();
       ledShowSafe();
       break;
+      
     case 'b':
     case 'B':
       dbgln("▶️ Boot-Animation...");
       bootAnim();
       break;
+      
     case 'g':
     case 'G':
       dbgln("▶️ Gag-Animation...");
       animGag();
       drawNine(DICE1_COLOR);
       break;
+      
     case '1': case '2': case '3': case '4': case '5': case '6':
       gagModeActive = false;
       dice1Result = c - '0';
@@ -2872,8 +3341,8 @@ void cmd(char c) {
       dbg("🎯 Würfel 1 = ");
       dbgln(dice1Result);
       break;
+      
     case '9':
-      // 9er Pasch anzeigen
       gagModeActive = true;
       currentDisplayDice = 1;
       drawNine(DICE1_COLOR);
@@ -2881,18 +3350,21 @@ void cmd(char c) {
       lastDisplaySwitch = millis();
       dbgln("🎯 9er Pasch!");
       break;
+      
     case '+':
       displayInterval = min(5000UL, displayInterval + 100);
       dbg("⏱️ ");
       dbg(displayInterval);
       dbgln("ms");
       break;
+      
     case '-':
       displayInterval = max(200UL, displayInterval - 100);
       dbg("⏱️ ");
       dbg(displayInterval);
       dbgln("ms");
       break;
+      
     case 'c':
     case 'C':
       ledClear();
@@ -2901,12 +3373,14 @@ void cmd(char c) {
       gagModeActive = false;
       dbgln("🧹 Cleared");
       break;
+      
     case 'h': case 'H': case '?': showHelp(); break;
     case 'i': case 'I': showInfo(); break;
     case 'v': case 'V': showBatt(); break;
     case 's': case 'S': showSensor(); break;
     case 't': case 'T': showStats(); break;
     case 'x': case 'X': resetStats(); break;
+    
     default:
       if (c >= 32) {
         dbg("❓ '");
@@ -2943,7 +3417,7 @@ void setup() {
 
   dbgln();
   printLine('=');
-  printCentered("🎲 MAGIC-FLEX-CUBE v3 🎲");
+  printCentered(MOTD);
   printLine('=');
   dbgln();
 
