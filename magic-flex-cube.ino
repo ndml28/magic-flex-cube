@@ -8,7 +8,7 @@
 // ============================================
 // CONFIGURATION
 // ============================================
-#define MOTD "Magic-Flex-Cube v6"
+#define MOTD "Magic-Flex-Cube v7"
 #define BATTERY_PIN 5
 #define BATTERY_READ_INTERVAL 15000
 #define POLL_INTERVAL_ACTIVE 12
@@ -20,13 +20,13 @@
 #define BATTERY_NOMINAL 3.7f
 #define BATTERY_LOW 3.4f
 #define BATTERY_CRITICAL 3.3f
-#define BATTERY_NOT_PRESENT 1.0f
+#define BATTERY_NOT_PRESENT 2.0f
 
 #define ADC_RESOLUTION 4095.0f
 #define ADC_REF_VOLTAGE 3.3f
 #define VOLTAGE_DIVIDER_RATIO 2.0f
 
-#define BRIGHTNESS_LOW_POWER 1
+#define BRIGHTNESS_LOW_POWER 2
 #define BRIGHTNESS_NORMAL 4
 #define BRIGHTNESS_DIM 1
 #define BRIGHTNESS_ANIMATION 20
@@ -34,26 +34,27 @@
 #define BRIGHTNESS_SHAKE 20
 
 #define DEEP_SLEEP_BATTERY 60
-#define DEEP_SLEEP_IDLE 20
+#define DEEP_SLEEP_IDLE 2 // TODO
 #define uS_TO_S_FACTOR 1000000ULL
 
 #define LED_PIN 14
 #define NUMPIXELS 64
-#define BUTTON_PIN 2
 #define I2C_SDA 11
 #define I2C_SCL 12
 
 // ============================================
 // SHAKE DETECTION
 // ============================================
-#define SHAKE_THRESHOLD 3500.0f
-#define SHAKE_GYRO_THRESHOLD 3000.0f
-#define SHAKE_MIN_DURATION 350
+#define SHAKE_THRESHOLD 9500.0f
+#define SHAKE_MIN_DURATION 450
 #define SHAKE_END_DELAY 500
-#define SHAKE_PASCH_TIME 2000
+#define SHAKE_PASCH_TIME 3000
 #define SHAKE_GAG_TIME 10000
+#define SHAKE_ONE_TIME 12000 
+#define SHAKE_NORMAL_AGAIN 14000
 #define SHAKE_COOLDOWN 3000
-#define ORIENTATION_THRESHOLD 400.0f
+#define ORIENTATION_THRESHOLD 75.0f
+#define IMU_SAMPLES 1 // multiple did not work better
 
 #define DEFAULT_DISPLAY_INTERVAL 1000
 #define DEFAULT_ANIMATION 11
@@ -74,6 +75,7 @@ CRGB leds[NUMPIXELS];
 QMI8658 imu;
 
 uint8_t dice1Result = 1, dice2Result = 1;
+bool oneOnlyMode = false;
 bool isDisplayingResult = false;
 uint8_t currentDisplayDice = 1;
 uint8_t displayPhase = 0;
@@ -106,7 +108,6 @@ unsigned long lastActivityTime = 0, shakeAnimTime = 0;
 unsigned long shakeActiveTime = 0;
 
 float lastAccelX = 0, lastAccelY = 0, lastAccelZ = 0;
-float lastDelta = 0, lastGyro = 0;
 bool isDimmed = false;
 uint8_t currentBrightness = BRIGHTNESS_NORMAL;
 bool waitingForAnimNumber = false;
@@ -116,6 +117,7 @@ unsigned long animInputTime = 0;
 bool imuOK = false;
 uint8_t imuErrorCount = 0;
 bool gagModeActive = false;
+bool orientationNotChanged = false;
 
 // ============================================
 // STATISTIKEN
@@ -812,17 +814,22 @@ void updateShakeAnim() {
 // ============================================
 // BATTERY
 // ============================================
-float readBattQuick() {
-  return (analogRead(BATTERY_PIN) / ADC_RESOLUTION) * ADC_REF_VOLTAGE * VOLTAGE_DIVIDER_RATIO;
-}
 
-float readBatt() {
-  uint32_t sum = 0;
-  for (int i = 0; i < 10; i++) {
-    sum += analogRead(BATTERY_PIN);
-    delay(2);
+// Voltage: Min 3, Max 10 Versuche, Werte müssen plausibel sein
+float readVoltageSafe() {
+  float sum = 0;
+  int valid = 0;
+  
+  for (int i = 0; i < 10 && valid < 3; i++) {
+    float v = (analogRead(BATTERY_PIN) / ADC_RESOLUTION) * ADC_REF_VOLTAGE * VOLTAGE_DIVIDER_RATIO;
+    if (v > 0.0f && v < 5.5f) {  // Plausibilitätsprüfung
+      sum += v;
+      valid++;
+    }
+    if (valid < 3) delay(2);
   }
-  return (sum / 10.0f / ADC_RESOLUTION) * ADC_REF_VOLTAGE * VOLTAGE_DIVIDER_RATIO;
+  
+  return (valid >= 3) ? (sum / valid) : 0.01f;
 }
 
 uint8_t battPct(float v) {
@@ -835,13 +842,38 @@ uint8_t battPct(float v) {
 void updateBatt() {
   if (millis() - lastBatteryRead < BATTERY_READ_INTERVAL) return;
   lastBatteryRead = millis();
-  batteryVoltage = readBatt();
+  batteryVoltage = readVoltageSafe();
   batteryPercent = battPct(batteryVoltage);
 }
 
 // ============================================
 // IMU
 // ============================================
+
+// IMU: Min 3, Max 10 Versuche, Pluasibilitätscheck
+bool readIMUSafe(float &aX = lastAccelX, float &aY = lastAccelY, float &aZ = lastAccelZ) {
+  float sumAX = 0, sumAY = 0, sumAZ = 0;
+  int valid = 0;
+  
+
+  for (int i = 0; i < 10 && valid < IMU_SAMPLES; i++) {
+    float x = 0, y = 0,z = 0;
+    if (imu.isDataReady() && imu.readAccel(x,y,z)) {
+      if (fabs(x) < 4000 && fabs(y) < 4000 && fabs(z) < 4000 && (fabs(x) + fabs(y) + fabs(z)) > 100) {
+        sumAX += x; sumAY += y; sumAZ += z;
+        valid++;
+      }
+    }
+    if (valid < IMU_SAMPLES) delay(20);
+  }
+  
+  if (valid >= IMU_SAMPLES) {
+    aX = sumAX / valid; aY = sumAY / valid; aZ = sumAZ / valid;
+    return true;
+  }
+  return false;
+}
+
 bool initIMU() {
   dbg("IMU initialisieren... ");
 
@@ -849,42 +881,30 @@ bool initIMU() {
     dbgln("FEHLER!");
     return false;
   }
-
-  Wire.setClock(100000);
-  delay(50);
-
+  imu.reset();
   imu.setAccelRange(QMI8658_ACCEL_RANGE_4G);
-  imu.setAccelODR(QMI8658_ACCEL_ODR_125HZ);
+  imu.setAccelODR(QMI8658_ACCEL_ODR_500HZ);
   imu.setAccelUnit_mg(true);
-  imu.setGyroRange(QMI8658_GYRO_RANGE_256DPS);
-  imu.setGyroODR(QMI8658_GYRO_ODR_125HZ);
-  imu.setGyroUnit_dps(true);
-  imu.enableSensors(QMI8658_ENABLE_ACCEL | QMI8658_ENABLE_GYRO);
+  imu.enableAccel();
 
-  delay(100);
-
-  QMI8658_Data d;
-  for (int retry = 0; retry < 5; retry++) {
-    if (imu.readSensorData(d)) {
-      lastAccelX = d.accelX;
-      lastAccelY = d.accelY;
-      lastAccelZ = d.accelZ;
-      dbgln("OK");
-      return true;
-    }
-    delay(20);
+  if (readIMUSafe()) {
+    dbgln("OK");
+    return true;
   }
-
   dbgln("LESEFEHLER!");
   return false;
 }
 
 void disableIMU() {
+  imu.enableAccel(false);
+  imu.enableSensors(QMI8658_DISABLE_ALL);
+  delay(50);
   Wire.end();
 }
 
+
 void saveOrientation() {
-  if (imuOK) {
+  if (!orientationNotChanged && imuOK) {
     sleepAccelX = lastAccelX;
     sleepAccelY = lastAccelY;
     sleepAccelZ = lastAccelZ;
@@ -899,102 +919,35 @@ void saveOrientation() {
 }
 
 bool checkOrientationChanged() {
-  // Vollständige IMU-Initialisierung (wie in initIMU)
-  if (!imu.begin(I2C_SDA, I2C_SCL)) {
-    dbgln("⚠️ IMU Init fehlgeschlagen");
+  
+  if (!readIMUSafe()) {
+    dbgln("⚠️ IMU-Lesefehler - nehme Bewegung an");
     return true;
   }
   
-  Wire.setClock(100000);
-  delay(100);  // Längeres Delay nach Begin
-  
-  // Komplette Konfiguration wie in initIMU()
-  imu.setAccelRange(QMI8658_ACCEL_RANGE_4G);
-  imu.setAccelODR(QMI8658_ACCEL_ODR_125HZ);
-  imu.setAccelUnit_mg(true);
-  imu.setGyroRange(QMI8658_GYRO_RANGE_256DPS);
-  imu.setGyroODR(QMI8658_GYRO_ODR_125HZ);
-  imu.setGyroUnit_dps(true);
-  imu.enableSensors(QMI8658_ENABLE_ACCEL | QMI8658_ENABLE_GYRO);
-  
-  delay(150);  // Warten bis Sensor stabil
-  
-  // WICHTIG: Erste Lesungen verwerfen (Aufwärm-Phase)
-  QMI8658_Data dummy;
-  for (int i = 0; i < 10; i++) {
-    imu.readSensorData(dummy);
-    delay(20);
-  }
-  
-  // Jetzt echte Messungen mitteln
-  float sumX = 0, sumY = 0, sumZ = 0;
-  int validReadings = 0;
-  
-  for (int i = 0; i < 10; i++) {
-    QMI8658_Data d;
-    if (imu.readSensorData(d)) {
-      // Plausibilitätsprüfung: Werte müssen im normalen Bereich sein
-      if (abs(d.accelX) < 3000 && abs(d.accelY) < 3000 && abs(d.accelZ) < 3000) {
-        sumX += d.accelX;
-        sumY += d.accelY;
-        sumZ += d.accelZ;
-        validReadings++;
-      }
-    }
-    delay(20);
-  }
-  
-  // Nicht genug gültige Lesungen = Sensor-Problem
-  if (validReadings < 5) {
-    dbg("⚠️ Nur ");
-    dbg(validReadings);
-    dbgln(" gültige IMU-Lesungen - nehme Bewegung an");
-    disableIMU();
-    return true;
-  }
-  
-  float avgX = sumX / validReadings;
-  float avgY = sumY / validReadings;
-  float avgZ = sumZ / validReadings;
-  
-  float deltaX = abs(avgX - sleepAccelX);
-  float deltaY = abs(avgY - sleepAccelY);
-  float deltaZ = abs(avgZ - sleepAccelZ);
+  float deltaX = abs(lastAccelX - sleepAccelX);
+  float deltaY = abs(lastAccelY - sleepAccelY);
+  float deltaZ = abs(lastAccelZ - sleepAccelZ);
   float totalDelta = deltaX + deltaY + deltaZ;
   
-  // Debug-Ausgabe
-  dbg("   Gespeichert: X=");
-  dbgf(sleepAccelX, 0);
-  dbg(" Y=");
-  dbgf(sleepAccelY, 0);
-  dbg(" Z=");
-  dbgf(sleepAccelZ, 0);
-  dbgln();
+  dbg("   Gespeichert: X="); dbgf(sleepAccelX, 0);
+  dbg(" Y="); dbgf(sleepAccelY, 0);
+  dbg(" Z="); dbgf(sleepAccelZ, 0); dbgln();
   
-  dbg("   Aktuell:     X=");
-  dbgf(avgX, 0);
-  dbg(" Y=");
-  dbgf(avgY, 0);
-  dbg(" Z=");
-  dbgf(avgZ, 0);
-  dbgln();
+  dbg("   Aktuell:     X="); dbgf(lastAccelX, 0);
+  dbg(" Y="); dbgf(lastAccelY, 0);
+  dbg(" Z="); dbgf(lastAccelZ, 0); dbgln();
   
-  dbg("   Orientierung: delta=");
-  dbgf(totalDelta, 0);
-  dbg(" (threshold=");
-  dbgf(ORIENTATION_THRESHOLD, 2);
-  dbgln(")");
+  dbg("   Delta="); dbgf(totalDelta, 0);
+  dbg(" (threshold="); dbgf(ORIENTATION_THRESHOLD, 2); dbgln(")");
   
-  disableIMU();
-  
-  return (totalDelta > ORIENTATION_THRESHOLD);
+  orientationNotChanged = (totalDelta <= ORIENTATION_THRESHOLD);
+  return !orientationNotChanged;
 }
 
 bool checkShaking() {
-  if (!imuOK) return false;
-
-  QMI8658_Data d;
-  if (!imu.readSensorData(d)) {
+  float aX, aY, aZ;
+  if (!readIMUSafe(aX, aY, aZ)) {
     imuErrorCount++;
     if (imuErrorCount > 10) {
       imuErrorCount = 0;
@@ -1003,21 +956,18 @@ bool checkShaking() {
     }
     return false;
   }
-
   imuErrorCount = 0;
 
-  float dx = abs(d.accelX - lastAccelX);
-  float dy = abs(d.accelY - lastAccelY);
-  float dz = abs(d.accelZ - lastAccelZ);
-  float gyro = abs(d.gyroX) + abs(d.gyroY) + abs(d.gyroZ);
+  float dx = abs(aX - lastAccelX);
+  float dy = abs(aY - lastAccelY);
+  float dz = abs(aZ - lastAccelZ);
 
-  lastAccelX = d.accelX;
-  lastAccelY = d.accelY;
-  lastAccelZ = d.accelZ;
-  lastDelta = dx + dy + dz;
-  lastGyro = gyro;
+  lastAccelX = aX;
+  lastAccelY = aY;
+  lastAccelZ = aZ;
+  float lastDelta = dx + dy + dz;
 
-  return (lastDelta > SHAKE_THRESHOLD) || (gyro > SHAKE_GYRO_THRESHOLD);
+  return (lastDelta > SHAKE_THRESHOLD);
 }
 
 // ============================================
@@ -1048,19 +998,18 @@ void enterDeepSleep(uint8_t reason, uint32_t seconds) {
   }
   
   ledOff();
-  delay(50);
   
   disableIMU();
   
   Serial.flush();
-  delay(10);
+  delay(10); 
   
   esp_sleep_enable_timer_wakeup(seconds * uS_TO_S_FACTOR);
   esp_deep_sleep_start();
 }
 
-
-void handleWakeup() {
+// return 0 if IMU is not init, 1 if initIMU was called
+uint8_t handleWakeup() {
   // Prüfen ob es wirklich ein Deep Sleep Wakeup war
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
   
@@ -1069,21 +1018,20 @@ void handleWakeup() {
     dbgln("🔄 Normaler Boot (kein Deep Sleep)");
     sleepReason = 0;  // Reset für sauberen Zustand
     bootCount = 0;
-    return;
+    return 0;
   }
   
   // Deep Sleep Wakeup!
   bootCount++;
-  
+
   dbgln();
   printLine('=');
   dbg("🔔 DEEP SLEEP WAKEUP #");
   dbgln(bootCount);
   dbg("   Sleep Reason: ");
   dbgln(sleepReason);
-  
-  delay(50);
-  float v = readBattQuick();
+
+  float v = readVoltageSafe();
   
   dbg("   Spannung: ");
   dbgf(v, 2);
@@ -1095,25 +1043,23 @@ void handleWakeup() {
     if (v >= BATTERY_NOMINAL) {
       dbgln("   ✅ Batterie OK - Normaler Start");
       sleepReason = 0;
-      return;
+      return 0;
     }
     if (v < BATTERY_NOT_PRESENT) {
       dbgln("   ✅ USB angeschlossen - Normaler Start");
       sleepReason = 0;
-      return;
+      return 0;
     }
     dbgln("   ❌ Batterie noch kritisch - weiter schlafen");
     printLine('=');
     
     // Kurz rotes Batterie-Symbol zeigen
-    FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);
-    ledSetBrightness(BRIGHTNESS_LOW_POWER);
-    drawBatt(0, 0xFF0000, 0);
-    delay(500);
+    drawBatt(0, 0x00FF00, 0);
+    delay(1000);
     ledOff();
     
     enterDeepSleep(1, DEEP_SLEEP_BATTERY);
-    return;  // Wird nie erreicht
+    return 99;  // Wird nie erreicht
   }
   
   // Idle Sleep (reason == 2)
@@ -1122,27 +1068,29 @@ void handleWakeup() {
     if (v <= BATTERY_CRITICAL && v >= BATTERY_NOT_PRESENT) {
       dbgln("   ⚠️ Batterie kritisch geworden!");
       enterDeepSleep(1, DEEP_SLEEP_BATTERY);
-      return;
+      return 99;
     }
     
     // IMU initialisieren für Orientierungsprüfung
+    imuOK = initIMU();
     dbgln("   Prüfe Orientierungsänderung...");
     
     if (checkOrientationChanged()) {
       dbgln("   ✅ Bewegung erkannt - Aufwachen!");
       sleepReason = 0;
-      return;
+      return 1;
     }
     
     dbgln("   ❌ Keine Änderung - weiter schlafen");
     printLine('=');
     enterDeepSleep(2, DEEP_SLEEP_IDLE);
-    return;  // Wird nie erreicht
+    return 99;  // Wird nie erreicht
   }
   
   // Unbekannter Reason -> normaler Boot
   dbgln("   ⚠️ Unbekannter Reason - Normaler Start");
   sleepReason = 0;
+  return 0;
 }
 
 
@@ -2726,7 +2674,7 @@ void screensaverMode() {
       delay(100);
     }
     
-    float v = readBattQuick();
+    float v = readVoltageSafe();
     if (v <= BATTERY_FULL && v >= BATTERY_NOT_PRESENT) {
       dbgln("\n⚠️ Nicht mehr am USB - Screensaver beendet");
       registerActivity();
@@ -2773,7 +2721,7 @@ void checkBatteryCritical() {
     
     cpuFast();
     ledSetBrightness(BRIGHTNESS_LOW_POWER);
-    drawBatt(0, 0xFF0000, 0x3C0000);
+    drawBatt(0, 0x00FF00, 0x3C0000);
     delay(2000);
     
     for (int b = BRIGHTNESS_LOW_POWER; b >= 0; b--) {
@@ -2803,11 +2751,7 @@ void updateShake() {
         lastShakeTime = now;
         stats.shakeAttempts++;
         registerActivity();
-        dbg("\n🔔 Shake START (dA=");
-        dbgf(lastDelta, 0);
-        dbg(" G=");
-        dbgf(lastGyro, 0);
-        dbgln(")");
+        dbgln("\n🔔 Shake START");
       }
       break;
 
@@ -2872,10 +2816,12 @@ void roll(unsigned long dur) {
   cpuFast();
   
   gagModeActive = false;
-  // displayPhase NICHT zurücksetzen! Das stört die 3er-Rotation
+  oneOnlyMode = false;  // Reset
 
   bool pasch = (dur >= SHAKE_PASCH_TIME) && (dur < SHAKE_GAG_TIME);
-  bool gag = (dur >= SHAKE_GAG_TIME);
+  bool gag = (dur >= SHAKE_GAG_TIME) && (dur < SHAKE_ONE_TIME);
+  bool oneOnly = (dur >= SHAKE_ONE_TIME) && (dur < SHAKE_NORMAL_AGAIN);
+  // dur >= SHAKE_NORMAL_AGAIN oder dur < SHAKE_PASCH_TIME -> normal
 
   printLine('=');
   dbg("🎲 WÜRFELN!");
@@ -2885,6 +2831,8 @@ void roll(unsigned long dur) {
     dbg("ms");
     if (gag) dbg(" - GAG!");
     else if (pasch) dbg(" - PASCH!");
+    else if (oneOnly) dbg(" - EINE 1!");
+    else if (dur >= SHAKE_NORMAL_AGAIN) dbg(" - LANG->NORMAL");
     dbgln(")");
   } else {
     dbgln();
@@ -2896,7 +2844,7 @@ void roll(unsigned long dur) {
     if (dur < stats.shortestShake) stats.shortestShake = dur;
   }
 
-  // GAG-MODUS: 9er Pasch
+  // GAG-MODUS: 9er Pasch (10-12s)
   if (gag) {
     animGag();
     drawNine(DICE1_COLOR);
@@ -2913,7 +2861,38 @@ void roll(unsigned long dur) {
     return;
   }
   
-  // PASCH-MODUS
+  // ONE-ONLY MODUS: Nur eine 1 (12-14s)
+  if (oneOnly) {
+    oneOnlyMode = true;
+    playAnim();
+    
+    dice1Result = 1;
+    dice2Result = 0;  // Zweiter Würfel "aus"
+    
+    stats.totalRolls++;
+    stats.numberCounts[1]++;
+    stats.sumCounts[1]++;  // Summe = 1
+
+    currentDisplayDice = 1;
+    currentBrightness = BRIGHTNESS_NORMAL;
+    ledSetBrightness(currentBrightness);
+
+    drawDie(1, DICE1_COLOR);
+
+    cpuSlow();
+
+    isDisplayingResult = true;
+    lastDisplaySwitch = millis();
+    lastRollTime = millis();
+
+    printLine('-');
+    dbgln("   🎯 Nur eine 1!");
+    printLine('=');
+    dbgln();
+    return;
+  }
+  
+  // PASCH-MODUS (2-10s)
   if (pasch) {
     animPasch();
     playAnim();
@@ -2925,7 +2904,7 @@ void roll(unsigned long dur) {
       dice2Result = random(1, 7);
     }
   } else {
-    // NORMAL
+    // NORMAL (< 2s oder > 14s)
     playAnim();
     dice1Result = random(1, 7);
     dice2Result = random(1, 7);
@@ -2968,6 +2947,26 @@ void updateDisplay() {
   if (millis() - lastDisplaySwitch < displayInterval) return;
   
   lastDisplaySwitch = millis();
+  
+  // ONE-ONLY Modus: Nur zwischen Würfel 1 und Batterie wechseln (kein zweiter Würfel)
+  if (oneOnlyMode) {
+    bool showBatteryWarning = !isUSBPower() && 
+                              (batteryVoltage < BATTERY_LOW) && 
+                              (batteryVoltage >= BATTERY_CRITICAL);
+    
+    if (showBatteryWarning) {
+      displayPhase++;
+      if (displayPhase > 1) displayPhase = 0;
+      
+      if (displayPhase == 0) {
+        drawDie(dice1Result, DICE1_COLOR);
+      } else {
+        drawBattLow();
+      }
+    }
+    // Ohne Batterie-Warnung: Würfel 1 bleibt einfach angezeigt (kein Wechsel)
+    return;
+  }
   
   // GAG-Modus: Zwischen zwei 9ern wechseln
   if (gagModeActive) {
@@ -3053,8 +3052,18 @@ void showHelp() {
   dbg("-");
   dbg(SHAKE_GAG_TIME / 1000);
   dbgln("s (50% Pasch-Chance)");
-  dbg("  9er Pasch:    > ");
+  dbg("  9er Pasch:    ");
   dbg(SHAKE_GAG_TIME / 1000);
+  dbg("-");
+  dbg(SHAKE_ONE_TIME / 1000);
+  dbgln("s");
+  dbg("  nur eine 1:   ");
+  dbg(SHAKE_ONE_TIME / 1000);
+  dbg("-");
+  dbg(SHAKE_NORMAL_AGAIN / 1000);
+  dbgln("s");
+  dbg("  Normal:       > ");
+  dbg(SHAKE_NORMAL_AGAIN / 1000);
   dbgln("s");
   printLine('=');
   dbgln();
@@ -3161,7 +3170,7 @@ void resetStats() {
 }
 
 void showBatt() {
-  batteryVoltage = readBatt();
+  batteryVoltage = readVoltageSafe();
   batteryPercent = battPct(batteryVoltage);
 
   printLine('-');
@@ -3188,28 +3197,25 @@ void showSensor() {
   printLine('=');
 
   for (int i = 0; i < 50; i++) {
-    QMI8658_Data d;
-    if (imu.readSensorData(d)) {
-      float dx = abs(d.accelX - lastAccelX);
-      float dy = abs(d.accelY - lastAccelY);
-      float dz = abs(d.accelZ - lastAccelZ);
+    float aX, aY, aZ;
+    if (readIMUSafe(aX, aY, aZ)) {
+      float dx = abs(aX - lastAccelX);
+      float dy = abs(aY - lastAccelY);
+      float dz = abs(aZ - lastAccelZ);
       float delta = dx + dy + dz;
-      float gyro = abs(d.gyroX) + abs(d.gyroY) + abs(d.gyroZ);
 
       dbg("  dA=");
       dbgf(delta, 0);
-      dbg(" G=");
-      dbgf(gyro, 0);
 
-      if (delta > SHAKE_THRESHOLD || gyro > SHAKE_GYRO_THRESHOLD) {
+      if (delta > SHAKE_THRESHOLD) {
         dbgln(" 🔔 SHAKE!");
       } else {
         dbgln();
       }
 
-      lastAccelX = d.accelX;
-      lastAccelY = d.accelY;
-      lastAccelZ = d.accelZ;
+      lastAccelX = aX;
+      lastAccelY = aY;
+      lastAccelZ = aZ;
     }
     delay(100);
   }
@@ -3372,6 +3378,7 @@ void cmd(char c) {
       isDisplayingResult = false;
       gagModeActive = false;
       dbgln("🧹 Cleared");
+      enterDeepSleep(2, 1);
       break;
       
     case 'h': case 'H': case '?': showHelp(); break;
@@ -3394,10 +3401,12 @@ void cmd(char c) {
 // SETUP
 // ============================================
 void setup() {
-  setCpuFrequencyMhz(CPU_FREQ_ACTIVE);
+  cpuFast();
+  
 
   Serial.begin(115200);
-  delay(100);
+
+  Wire.setClock(100000);
 
   disableRadios();
 
@@ -3407,12 +3416,12 @@ void setup() {
   FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);
   ledSetBrightness(BRIGHTNESS_NORMAL);
 
+  cpuFast();
+  if(handleWakeup() == 0 ){
+    imuOK = initIMU();
+  }
 
-  imuOK = initIMU();
-
-  handleWakeup();
-
-  batteryVoltage = readBatt();
+  batteryVoltage = readVoltageSafe();
   batteryPercent = battPct(batteryVoltage);
 
   dbgln();
@@ -3432,7 +3441,7 @@ void setup() {
     
     if (batteryVoltage <= BATTERY_CRITICAL) {
       dbgln("  ⚠️ Batterie kritisch!");
-      drawBatt(0, 0xFF0000, 0);
+      drawBatt(0, 0x00FF00, 0);
       delay(1500);
       enterDeepSleep(1, DEEP_SLEEP_BATTERY);
     }
@@ -3440,7 +3449,6 @@ void setup() {
 
 
   randomSeed(analogRead(0) ^ micros() ^ esp_random());
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   lastActivityTime = millis();
 
