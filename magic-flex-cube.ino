@@ -1059,10 +1059,12 @@ uint8_t handleWakeup() {
     dbgln("   ❌ Batterie noch kritisch - weiter schlafen");
     printLine('=');
     
-    // Kurz rotes Batterie-Symbol zeigen
-    drawBatt(0, 0x00FF00, 0);
-    delay(1000);
-    ledOff();
+    if (v >= BATTERY_LOW){
+      // Kurz rotes Batterie-Symbol zeigen
+      drawBatt(0, 0x00FF00, 0);
+      delay(2000);
+      ledOff();
+    }
     
     enterDeepSleep(1, DEEP_SLEEP_BATTERY);
     return 99;  // Wird nie erreicht
